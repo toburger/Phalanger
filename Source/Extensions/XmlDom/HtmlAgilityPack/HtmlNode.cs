@@ -1520,7 +1520,9 @@ namespace HtmlAgilityPack
                     html = ((HtmlCommentNode) this).Comment;
                     if (_ownerdocument.OptionOutputAsXml)
                     {
-                        outText.Write("<!--" + GetXmlComment((HtmlCommentNode) this) + "-->");
+                        outText.Write("<!--");
+                        outText.Write(GetXmlComment((HtmlCommentNode)this));
+                        outText.Write("-->");
                     }
                     else
                     {
@@ -1531,8 +1533,9 @@ namespace HtmlAgilityPack
                 case HtmlNodeType.Document:
                     if (_ownerdocument.OptionOutputAsXml)
                     {
-                        outText.Write("<?xml version=\"1.0\" encoding=\"" + _ownerdocument.GetOutEncoding().BodyName +
-                                      "\"?>");
+                        outText.Write("<?xml version=\"1.0\" encoding=\"");
+                        outText.Write(_ownerdocument.GetOutEncoding().BodyName);
+                        outText.Write("\"?>");
 
                         // check there is a root element
                         if (_ownerdocument.DocumentNode.HasChildNodes)
@@ -1587,7 +1590,7 @@ namespace HtmlAgilityPack
                     html = ((HtmlTextNode) this).Text;
                     if (_ownerdocument.OptionOutputAsXml)
                     {
-                        outText.Write(HtmlDocument.HtmlEncode(html));
+                        outText.Write(HtmlDocument.HtmlEncode(html, AttributeValueQuote.None));
                     }
                     else
                     {
@@ -1611,27 +1614,21 @@ namespace HtmlAgilityPack
 
                     if (_ownerdocument.OptionOutputAsXml)
                     {
-                        if (name.Length > 0)
+                        if (string.IsNullOrWhiteSpace(name))    // not an empty/whitespace string
+                            break;
+                        
+                        if (name[0] == '?')
                         {
-                            if (name[0] == '?')
-                            {
-                                // forget this one, it's been done at the document level
-                                break;
-                            }
-
-                            if (name.Trim().Length == 0)
-                            {
-                                break;
-                            }
-                            name = HtmlDocument.GetXmlName(name);
-                        }
-                        else
-                        {
+                            // forget this one, it's been done at the document level
                             break;
                         }
+                        
+                        name = HtmlDocument.GetXmlName(name);
                     }
 
-                    outText.Write("<" + name);
+                    // write "<name":
+                    outText.Write('<');
+                    outText.Write(name);
                     WriteAttributes(outText, false);
 
                     if (!HasChildNodes)
@@ -1657,7 +1654,9 @@ namespace HtmlAgilityPack
                         }
                         else
                         {
-                            outText.Write("></" + name + ">");
+                            outText.Write("></");
+                            outText.Write(name);
+                            outText.Write(">");
                         }
                     }
                     else
@@ -1876,7 +1875,7 @@ namespace HtmlAgilityPack
         internal void WriteAttribute(TextWriter outText, HtmlAttribute att)
         {
             string name;
-            string quote = att.QuoteType == AttributeValueQuote.DoubleQuote ? "\"" : "'";
+            char quote = (att.QuoteType == AttributeValueQuote.DoubleQuote) ? '"' : '\'';
             if (_ownerdocument.OptionOutputAsXml)
             {
                 if (_ownerdocument.OptionOutputOriginalCase)
@@ -1892,7 +1891,12 @@ namespace HtmlAgilityPack
                         name = '_' + name;  //   // fix such attribute name by prepending '_'
                 }
 
-                outText.Write(" " + name + "=" + quote + HtmlDocument.HtmlEncode(att.XmlValue) + quote);
+                outText.Write(' ');
+                outText.Write(name);
+                outText.Write('=');
+                outText.Write(quote);
+                outText.Write(HtmlDocument.HtmlEncode(att.XmlValue, att.QuoteType));
+                outText.Write(quote);
             }
             else
             {
@@ -1910,7 +1914,8 @@ namespace HtmlAgilityPack
                     if ((att.Name[0] == '<') && (att.Name[1] == '%') &&
                         (att.Name[att.Name.Length - 1] == '>') && (att.Name[att.Name.Length - 2] == '%'))
                     {
-                        outText.Write(" " + name);
+                        outText.Write(' ');
+                        outText.Write(name);
                         return;
                     }
                 }
@@ -1918,16 +1923,29 @@ namespace HtmlAgilityPack
                 {
                     if (att.Value.IndexOfAny(new Char[] {(char) 10, (char) 13, (char) 9, ' '}) < 0)
                     {
-                        outText.Write(" " + name + "=" + att.Value);
+                        outText.Write(' ');
+                        outText.Write(name);
+                        outText.Write('=');
+                        outText.Write(att.Value);
                     }
                     else
                     {
-                        outText.Write(" " + name + "=" + quote + att.Value + quote);
+                        outText.Write(' ');
+                        outText.Write(name);
+                        outText.Write('=');
+                        outText.Write(quote);
+                        outText.Write(att.Value);
+                        outText.Write(quote);
                     }
                 }
                 else
                 {
-                    outText.Write(" " + name + "=" + quote + att.Value + quote);
+                    outText.Write(' ');
+                    outText.Write(name);
+                    outText.Write('=');
+                    outText.Write(quote);
+                    outText.Write(att.Value);
+                    outText.Write(quote);
                 }
             }
         }

@@ -360,6 +360,7 @@ using Pair = System.Tuple<object,object>;
 
 %type<Object> constant_inititalizer                   // Expression
 %type<Object> scalar_expr                             // Expression
+%type<Object> heredoc_expr							  // Expression
 %type<Object> for_statement                           // Statement
 %type<Object> foreach_statement                       // Statement
 %type<Object> while_statement                         // Statement
@@ -1582,7 +1583,7 @@ expr_without_chain:
 	|	expr '*' expr	                  { $$ = new BinaryEx(@$, Operations.Mul, (Expression)$1, (Expression)$3); }
 	|	expr '/' expr	                  { $$ = new BinaryEx(@$, Operations.Div, (Expression)$1, (Expression)$3); }
 	|	expr '%' expr 	                { $$ = new BinaryEx(@$, Operations.Mod, (Expression)$1, (Expression)$3); }
-	| expr T_SL expr	                { $$ = new BinaryEx(@$, Operations.ShiftLeft, (Expression)$1, (Expression)$3); }
+	|	expr T_SL expr	                { $$ = new BinaryEx(@$, Operations.ShiftLeft, (Expression)$1, (Expression)$3); }
 	|	expr T_SR expr	                { $$ = new BinaryEx(@$, Operations.ShiftRight, (Expression)$1, (Expression)$3); }
 	|	expr T_IS_IDENTICAL expr				{ $$ = new BinaryEx(@$, Operations.Identical, (Expression)$1, (Expression)$3); }	
 	|	expr T_IS_NOT_IDENTICAL expr		{ $$ = new BinaryEx(@$, Operations.NotIdentical, (Expression)$1, (Expression)$3); }
@@ -1598,12 +1599,13 @@ expr_without_chain:
 	|	expr '?' expr ':' expr          { $$ = new ConditionalEx(@$, (Expression)$1, (Expression)$3, (Expression)$5); }
 	|	expr '?' ':' expr			    { $$ = new ConditionalEx(@$, (Expression)$1, null, (Expression)$4); }
 	
-	| T_LIST '(' assignment_list ')' '=' expr { $$ = new ListEx(@$, (List<Expression>)$3, (Expression)$6); }
+	|	T_LIST '(' assignment_list ')' '=' expr { $$ = new ListEx(@$, (List<Expression>)$3, (Expression)$6); }
 	|	T_ARRAY '(' array_item_list_opt ')'     { $$ = new ArrayEx(@$, (List<Item>)$3); }
+	|	'[' array_item_list_opt ']'				{ $$ = new ArrayEx(@$, (List<Item>)$2); }
 	|	T_ISSET '(' writable_chain_list ')'     { $$ = new IssetEx(@$, (List<VariableUse>)$3); }
 	|	T_EMPTY '(' chain ')'				            { CheckVariableUse(@3, $3); $$ = new EmptyEx(@$, (VariableUse)$3); }		
 	|	T_EVAL '(' expr ')'                     { $$ = new EvalEx(@$, (Expression)$3, false); }
-	| T_ASSERT '(' expr ')'                   { $$ = new EvalEx(@$, (Expression)$3, true); }
+	|	T_ASSERT '(' expr ')'                   { $$ = new EvalEx(@$, (Expression)$3, true); }
 	|	T_EXIT exit_expr_opt		                { $$ = new ExitEx(@$, (Expression)$2); }
 	|	scalar_expr                             { $$ = $1; }			
 	|	'`' composite_string_opt '`'						{ $$ = new ShellEx(@$, CreateConcatExOrStringLiteral(CombinePositions(@1, @3), (List<Expression>)$2, false)); }
@@ -1794,6 +1796,13 @@ function_call:
 		  $$ = new IndirectStMtdCall(@$, (GenericQualifiedName)$1, (CompoundVarUse)$3, (List<ActualParam>)$6, 
 				(List<TypeRef>)$4);	
 		}
+
+	|	keyed_variable T_DOUBLE_COLON keyed_variable generic_dynamic_args_opt '(' actual_argument_list_opt ')' 
+		{ 
+		  $$ = new IndirectStMtdCall(@$,
+				new IndirectTypeRef(@1, (VariableUse)$1, TypeRef.EmptyList), (CompoundVarUse)$3,
+				(List<ActualParam>)$6, (List<TypeRef>)$4);	
+		}
 		
 	|	keyed_variable generic_dynamic_args_opt '(' actual_argument_list_opt ')' 
 		{ 
@@ -1906,16 +1915,17 @@ namespace_name_list:
 ;
 
 namespace_name_identifier:	// identifier + some keywords that should be used within qualified name (List, Array, ...)
-		class_identifier{ $$ = $1; }
-	|	T_LIST			{ $$ = $1.Object; }
-	|	T_BOOL_TYPE     { $$ = $1.Object; }
-	|	T_INT_TYPE      { $$ = $1.Object; }
-	|	T_INT64_TYPE    { $$ = $1.Object; }
-	|	T_DOUBLE_TYPE   { $$ = $1.Object; }
-	|	T_STRING_TYPE   { $$ = $1.Object; }
-	|	T_RESOURCE_TYPE { $$ = $1.Object; }
-	|	T_OBJECT_TYPE   { $$ = $1.Object; }
-	|	T_ARRAY         { $$ = $1.Object; }
+		class_identifier	{ $$ = $1; }
+	|	T_LIST				{ $$ = CSharpNameToken(@1); }
+	|	T_BOOL_TYPE			{ $$ = CSharpNameToken(@1); }
+	|	T_INT_TYPE			{ $$ = CSharpNameToken(@1); }
+	|	T_INT64_TYPE		{ $$ = CSharpNameToken(@1); }
+	|	T_DOUBLE_TYPE		{ $$ = CSharpNameToken(@1); }
+	|	T_STRING_TYPE		{ $$ = CSharpNameToken(@1); }
+	|	T_RESOURCE_TYPE		{ $$ = CSharpNameToken(@1); }
+	|	T_OBJECT_TYPE		{ $$ = CSharpNameToken(@1); }
+	|	T_ARRAY				{ $$ = CSharpNameToken(@1); }
+	|	T_ABSTRACT			{ $$ = CSharpNameToken(@1); }
 ;
 
 keyed_field_names_opt:
@@ -1943,8 +1953,10 @@ ctor_arguments_opt:
 constant_inititalizer:
 	  constant                                  { $$ = $1; }
 	|	T_ARRAY '(' constant_array_item_list_opt ')'	{ $$ = new ArrayEx(@$, (List<Item>)$3); }
+	|	'[' constant_array_item_list_opt ']'	{ $$ = new ArrayEx(@$, (List<Item>)$2); }
 	|	'+' constant_inititalizer	                { $$ = new UnaryEx(@$, Operations.Plus, (Expression)$2); }
 	|	'-' constant_inititalizer	                { $$ = new UnaryEx(@$, Operations.Minus, (Expression)$2); }
+	|	heredoc_expr { $$ = $1; if (!($1 is StringLiteral)) this.ErrorSink.Add(FatalErrors.SyntaxError, SourceUnit, @1, CoreResources.nowdoc_expected); }
 ;
 
 constant:
@@ -1987,14 +1999,17 @@ class_constant:
 ;
 
 scalar_expr:
-	  constant		      { $$ = $1; }
+		constant		      { $$ = $1; }
 	|	T_STRING_VARNAME	{ $$ = new StringLiteral(@$, scanner.GetEncapsedString($1.Offset, $1.Integer)); }
 	|	'"'               { scanner.InUnicodeString = unicodeSemantics; } composite_string_opt '"' { $$ = CreateConcatExOrStringLiteral(@$, (List<Expression>)$3, false); }	
 	|	T_BINARY_DOUBLE   { scanner.InUnicodeString = unicodeSemantics; } composite_string_opt '"' { $$ = CreateConcatExOrStringLiteral(@$, (List<Expression>)$3, false); }
-	|	T_START_HEREDOC   { scanner.InUnicodeString = false; } composite_string_opt T_END_HEREDOC  { $$ = CreateConcatExOrStringLiteral(@$, (List<Expression>)$3, true); }
-	|	T_BINARY_HEREDOC  { scanner.InUnicodeString = false; } composite_string_opt T_END_HEREDOC  { $$ = CreateConcatExOrStringLiteral(@$, (List<Expression>)$3, true); }
+	|	heredoc_expr	  { $$ = $1; }
 ;
 
+heredoc_expr:
+		T_START_HEREDOC   { scanner.InUnicodeString = false; } composite_string_opt T_END_HEREDOC  { $$ = CreateConcatExOrStringLiteral(@$, (List<Expression>)$3, true); }
+	|	T_BINARY_HEREDOC  { scanner.InUnicodeString = false; } composite_string_opt T_END_HEREDOC  { $$ = CreateConcatExOrStringLiteral(@$, (List<Expression>)$3, true); }
+;
 
 writable_chain_list:
 	  writable_chain_list ',' writable_chain	

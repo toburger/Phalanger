@@ -257,38 +257,45 @@ namespace HtmlAgilityPack
         /// <returns>A string that is a valid XML name.</returns>
         public static string GetXmlName(string name)
         {
-            string xmlname = string.Empty;
+            var result = new StringBuilder(name.Length);
+
+            if (char.IsDigit(name[0]))
+                result.Append('_'); // prepend name starting with a number with '_' character
+
             for (int i = 0; i < name.Length; i++)
             {
+                char c = name[i];
+
                 // note: we are very limited here, too much?
-                if (((name[i] >= 'a') && (name[i] <= 'z')) ||
-                    ((name[i] >= '0') && (name[i] <= '9')) ||
-                    ((name[i] >= 'A') && (name[i] <= 'Z')) ||
-                    //					(name[i]==':') || (name[i]=='_') || (name[i]=='-') || (name[i]=='.')) // these are bads in fact
-                    (name[i] == '_') || (name[i] == '-') || (name[i] == '.'))
+                if ((c >= 'a' && c <= 'z') ||
+                    (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') ||
+                    //					(c==':') || (c=='_') || (c=='-') || (c=='.')) // these are bads in fact
+                    (c == '_') || (c == '-') || (c == '.'))
                 {
-                    xmlname += name[i];
+                    result.Append(c);
                 }
                 else
                 {
-                    byte[] bytes = Encoding.UTF8.GetBytes(new char[] { name[i] });
+                    byte[] bytes = Encoding.UTF8.GetBytes(new char[] { c });
                     for (int j = 0; j < bytes.Length; j++)
                     {
-                        xmlname += bytes[j].ToString("x2");
+                        result.Append(bytes[j].ToString("x2"));
                     }
-                    xmlname += "_";
+                    result.Append('_');
                 }
             }
 
-            return xmlname;
+            return result.ToString();
         }
 
         /// <summary>
         /// Applies HTML encoding to a specified string.
         /// </summary>
         /// <param name="html">The input string to encode. May not be null.</param>
+        /// <param name="attrQuote">Quotes used to encapsulate this string, used to escape characters properly.</param>
         /// <returns>The encoded string.</returns>
-        public static string HtmlEncode(string html)
+        public static string HtmlEncode(string html, AttributeValueQuote attrQuote)
         {
             if (html == null)
                 throw new ArgumentNullException("html");
@@ -302,10 +309,10 @@ namespace HtmlAgilityPack
                 if (c == '&')
                 {
                     // allowed: lt; gt; amp; quot;
-                    if (StartsWithHelperOrdinalIgnoreCase(html, "amp;", i + i) ||
-                        StartsWithHelperOrdinalIgnoreCase(html, "lt;", i + i) ||
-                        StartsWithHelperOrdinalIgnoreCase(html, "gt;", i + i) ||
-                        StartsWithHelperOrdinalIgnoreCase(html, "quot;", i + i))
+                    if (StartsWithHelperOrdinalIgnoreCase(html, "amp;", i + 1) ||
+                        StartsWithHelperOrdinalIgnoreCase(html, "lt;", i + 1) ||
+                        StartsWithHelperOrdinalIgnoreCase(html, "gt;", i + 1) ||
+                        StartsWithHelperOrdinalIgnoreCase(html, "quot;", i + 1))
                         str.Append(c);
                     else
                         // otherwise convert & to &amp;
@@ -322,6 +329,17 @@ namespace HtmlAgilityPack
                 else if (c == '"')
                 {
                     str.Append("&quot;");
+                }
+                else if (c == '\'')
+                {
+                    if (attrQuote == AttributeValueQuote.SingleQuote)
+                    {
+                        str.Append("&#39;");    // straight quote mark/apostrophe
+                    }
+                    else
+                    {
+                        str.Append(c);
+                    }
                 }
                 else if (IsXmlCharData(c))
                 {
