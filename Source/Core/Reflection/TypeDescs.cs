@@ -153,6 +153,7 @@ namespace PHP.Core.Reflection
 		public ClrType ClrType { get { return (ClrType)Type; } }
 
 		public bool IsInterface { get { return (memberAttributes & PhpMemberAttributes.Interface) != 0; } }
+        public bool IsTrait { get { return (memberAttributes & PhpMemberAttributes.Trait) != 0; } }
 		public virtual bool IsValueType { get { return false; } }
 
 		/// <summary>
@@ -434,7 +435,10 @@ namespace PHP.Core.Reflection
 		/// </summary>
         public static DTypeDesc Create(Type realType)
 		{
-			return (realType != null) ? Create(realType.TypeHandle) : null;
+            if (object.ReferenceEquals(realType, null))
+                return null;
+
+            return Create(realType.TypeHandle);
 		}
 
         /// <summary>

@@ -250,6 +250,25 @@ namespace PHP.Core.AST
             VisitStatementList(x.Body);
         }
 
+        virtual public void VisitTraitsUse(TraitsUse x)
+        {
+            // visits adaptation list
+            var list = x.TraitAdaptationList;
+            if (list != null)
+                foreach(PHP.Core.AST.TraitsUse.TraitAdaptation t in list)
+                    VisitElement(t);
+        }
+
+        virtual public void VisitTraitAdaptationPrecedence(TraitsUse.TraitAdaptationPrecedence x)
+        {
+
+        }
+
+        virtual public void VisitTraitAdaptationAlias(TraitsUse.TraitAdaptationAlias x)
+        {
+
+        }
+
         /// <summary>
         /// Visit expressions in echo statement.
         /// </summary>
@@ -880,7 +899,5 @@ namespace PHP.Core.AST
         
 
         #endregion
-
-
     }
 }

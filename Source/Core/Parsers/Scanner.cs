@@ -35,7 +35,7 @@ namespace PHP.Core.Parsers
     {
         void OnLineComment(Scanner/*!*/scanner, Parsers.Position position);
         void OnComment(Scanner/*!*/scanner, Parsers.Position position);
-        void OnPhpDocComment(Scanner/*!*/scanner, Parsers.Position position);
+        void OnPhpDocComment(Scanner/*!*/scanner, PHPDocBlock phpDocBlock);
 
         void OnOpenTag(Scanner/*!*/scanner, Parsers.Position position);
         void OnCloseTag(Scanner/*!*/scanner, Parsers.Position position);
@@ -53,7 +53,7 @@ namespace PHP.Core.Parsers
 
             public void OnLineComment(Scanner scanner, Parsers.Position position) { }
             public void OnComment(Scanner scanner, Parsers.Position position) { }
-            public void OnPhpDocComment(Scanner scanner, Parsers.Position position) { }
+            public void OnPhpDocComment(Scanner scanner, PHPDocBlock phpDocBlock) { }
             public void OnOpenTag(Scanner scanner, Parsers.Position position) { }
             public void OnCloseTag(Scanner scanner, Parsers.Position position) { }
 
@@ -93,7 +93,7 @@ namespace PHP.Core.Parsers
         /// <summary>
         /// Last doc comment read from input.
         /// </summary>
-        private string lastDocComment;
+        private PHPDocBlock lastDocComment;
 
         /// <summary>
         /// Tokens that should remember current <see cref="lastDocComment"/>.
@@ -103,7 +103,7 @@ namespace PHP.Core.Parsers
             Tokens.T_ABSTRACT, Tokens.T_FINAL, Tokens.T_STATIC, Tokens.T_PUBLIC, Tokens.T_PRIVATE, Tokens.T_PROTECTED,  // modifiers, also holds the doc comment (for class fields without T_VAR)
             Tokens.T_VAR,       // for class fields
             Tokens.T_CONST,     // for constants
-            Tokens.T_CLASS, Tokens.T_INTERFACE, // for type decl
+            Tokens.T_CLASS, Tokens.T_TRAIT, Tokens.T_INTERFACE, // for type decl
             Tokens.T_FUNCTION,  // for function/method
         };
 
@@ -129,9 +129,7 @@ namespace PHP.Core.Parsers
 		private readonly Encoding encoding;
 		private bool pure;
 
-        private readonly Action/*!*/UpdateTokenPosition;
-
-		public Scanner(Parsers.Position initialPosition, TextReader/*!*/ reader, SourceUnit/*!*/ sourceUnit,
+        public Scanner(Parsers.Position initialPosition, TextReader/*!*/ reader, SourceUnit/*!*/ sourceUnit,
 			ErrorSink/*!*/ errors, ICommentsSink commentsSink, LanguageFeatures features)
 			: base(reader)
 		{
@@ -157,10 +155,6 @@ namespace PHP.Core.Parsers
 
 			AllowAspTags = (features & LanguageFeatures.AspTags) != 0;
 			AllowShortTags = (features & LanguageFeatures.ShortOpenTags) != 0;
-
-            this.UpdateTokenPosition = (this.columnShift == 0 && this.encoding.IsSingleByte) ?
-                new Action(this.UpdateTokenPosition_Optimized) :
-                new Action(this.UpdateTokenPosition_Default);
 		}
 
 		private void StoreEncapsedString()
@@ -182,13 +176,10 @@ namespace PHP.Core.Parsers
 			return encapsedStringBuffer.ToString(offset, length);
 		}
 
-        #region UpdateTokenPosition
-
         /// <summary>
         /// Updates <see cref="streamOffset"/> and <see cref="tokenPosition"/>.
         /// </summary>
-        /// <remarks>Assumes <see cref="columnShift"/> != <c>0</c> or <see cref="encoding"/> is not single byte encoding.</remarks>
-        private void UpdateTokenPosition_Default()
+        private void UpdateTokenPosition()
 		{
 			// update token position info:
 			int byte_length = base.GetTokenByteLength(encoding);
@@ -212,31 +203,6 @@ namespace PHP.Core.Parsers
 			streamOffset += byte_length;
 		}
 
-        /// <summary>
-        /// Updates <see cref="streamOffset"/> and <see cref="tokenPosition"/>.
-        /// </summary>
-        /// <remarks>Assumes <see cref="columnShift"/> == <c>0</c> and <see cref="encoding"/> is single byte encoding.</remarks>
-        private void UpdateTokenPosition_Optimized()
-        {
-            Debug.Assert(this.encoding.IsSingleByte);
-            Debug.Assert(this.columnShift == 0);
-
-            // update token position info:
-            int byte_length = base.GetTokenCharLength();    // assuming encoding is single byte encoding
-
-            tokenPosition.FirstOffset = offsetShift + streamOffset;
-            tokenPosition.FirstLine = lineShift + token_start_pos.Line;
-            tokenPosition.FirstColumn = token_start_pos.Column; // assuming columnShift is 0
-
-            tokenPosition.LastOffset = tokenPosition.FirstOffset + byte_length - 1;
-            tokenPosition.LastLine = lineShift + token_end_pos.Line;
-            tokenPosition.LastColumn = token_end_pos.Column; // assuming columnShift is 0
-
-            streamOffset += byte_length;
-        }
-
-        #endregion
-
         public new Tokens GetNextToken()
 		{
 			for (; ; )
@@ -259,8 +225,8 @@ namespace PHP.Core.Parsers
 
                     case Tokens.T_DOC_COMMENT:
                         // remember token value to be used by the next token and skip the current:
-                        lastDocComment = base.GetTokenString();
-                        this.commentsSink.OnPhpDocComment(this, this.tokenPosition);
+                        this.lastDocComment = new PHPDocBlock(base.GetTokenString(), this.tokenPosition);
+                        this.commentsSink.OnPhpDocComment(this, this.lastDocComment);
                         break;
 
 					case Tokens.T_PRAGMA_FILE:
@@ -441,18 +407,30 @@ namespace PHP.Core.Parsers
 						}
 
 					// {HNUM}
-					case Tokens.ParseHexadecimalNumber:
-						{
-							// parse hexadecimal value
-							token = GetTokenAsDecimalNumber(2, 16, ref tokenSemantics);
+                    case Tokens.ParseHexadecimalNumber:
+                        {
+                            // parse hexadecimal value
+                            token = GetTokenAsDecimalNumber(2, 16, ref tokenSemantics);
 
-							if (token == Tokens.T_DNUMBER)
-							{
-								// conversion to double causes data loss
-								errors.Add(Warnings.TooBigIntegerConversion, SourceUnit, tokenPosition, GetTokenString());
-							}
-							goto default;
-						}
+                            if (token == Tokens.T_DNUMBER)
+                            {
+                                // conversion to double causes data loss
+                                errors.Add(Warnings.TooBigIntegerConversion, SourceUnit, tokenPosition, GetTokenString());
+                            }
+                            goto default;
+                        }
+
+                    // {BNUM}
+                    case Tokens.ParseBinaryNumber:
+                        // parse binary number value
+                        token = GetTokenAsDecimalNumber(2, 2, ref tokenSemantics);
+
+                        if (token == Tokens.T_DNUMBER)
+                        {
+                            // conversion to double causes data loss
+                            errors.Add(Warnings.TooBigIntegerConversion, SourceUnit, tokenPosition, GetTokenString());
+                        }
+                        goto default;
 
 					// {DNUM}|{EXPONENT_DNUM}
 					case Tokens.ParseDouble:
@@ -460,7 +438,7 @@ namespace PHP.Core.Parsers
 						token = Tokens.T_DNUMBER;
 						goto default;
 
-					#endregion
+                    #endregion
 
 					#region Another Semantics
 
@@ -525,6 +503,12 @@ namespace PHP.Core.Parsers
 								token = Tokens.T_STRING;
 								goto case Tokens.T_STRING;
 							}
+
+                            if (token == Tokens.T_ABSTRACT)
+                            {
+                                // remember this for possible CLR qualified name:
+                                tokenSemantics.Object = base.GetTokenString();
+                            }
 
 							goto default;
 						}
@@ -622,18 +606,13 @@ namespace PHP.Core.Parsers
                         {
                             // remember PHPDoc for current token
                             if (lastDocCommentRememberTokens.Contains(token))
-                                tokenSemantics.Object = lastDocComment;
+                                tokenSemantics.Object = this.lastDocComment;
 
                             // forget last doc comment text
                             if (!lastDocCommentKeepTokens.Contains(token))
                                 lastDocComment = null;
                         }
-                        else
-                        {
-                            if (tokenSemantics.Object != null && lastDocCommentRememberTokens.Contains(token))
-                                tokenSemantics.Object = null;   // clear tokenSemantics.Object, as it should contain PHPDoc
-                        }
-
+                        
 						return token;
 				}
 			}

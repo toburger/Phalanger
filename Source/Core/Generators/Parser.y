@@ -13,7 +13,7 @@ using PHP.Core.AST;
 using PHP.Core.AST.Linq;
 using PHP.Core.Reflection;
 using PHP.Core.Parsers.GPPG;
-using Pair = System.Tuple<object,object>;
+using FcnParam = System.Tuple<System.Collections.Generic.List<PHP.Core.AST.TypeRef>, System.Collections.Generic.List<PHP.Core.AST.ActualParam>, System.Collections.Generic.List<PHP.Core.AST.Expression>>;
 
 %%
 
@@ -163,16 +163,18 @@ using Pair = System.Tuple<object,object>;
 %token T_DEFAULT
 %token T_BREAK
 %token T_CONTINUE
-%token<Object> T_FUNCTION                 // string (doc comment)
-%token<Object> T_CONST                    // string (doc comment)
+%token<Object> T_FUNCTION                 // PHPDocBlock
+%token<Object> T_CONST                    // PHPDocBlock
 %token T_RETURN
 %token T_GLOBAL
-%token<Object> T_STATIC					  // string (doc comment)
-%token<Object> T_VAR                      // string (doc comment)
+%token<Object> T_STATIC					  // PHPDocBlock
+%token<Object> T_VAR                      // PHPDocBlock
 %token T_UNSET
 %token T_ISSET
 %token T_EMPTY
-%token<Object> T_CLASS                    // string (doc comment)
+%token<Object> T_CLASS                    // PHPDocBlock
+%token<Object> T_TRAIT                    // PHPDocBlock
+%token T_INSTEADOF
 %token T_EXTENDS
 %token T_OBJECT_OPERATOR
 %token T_DOUBLE_ARROW
@@ -180,6 +182,7 @@ using Pair = System.Tuple<object,object>;
 %token T_ARRAY
 %token T_CALLABLE
 %token T_CLASS_C
+%token T_TRAIT_C
 %token T_METHOD_C
 %token T_FUNC_C
 %token T_LINE
@@ -218,13 +221,13 @@ using Pair = System.Tuple<object,object>;
 %token T_TRY
 %token T_CATCH
 %token T_THROW
-%token<Object> T_INTERFACE                // string (doc comment)
+%token<Object> T_INTERFACE                // PHPDocBlock
 %token T_IMPLEMENTS
-%token<Object> T_ABSTRACT				  // string (doc comment)
-%token<Object> T_FINAL					  // string (doc comment)
-%token<Object> T_PRIVATE				  // string (doc comment)
-%token<Object> T_PROTECTED				  // string (doc comment)
-%token<Object> T_PUBLIC					  // string (doc comment)
+%token<Object> T_ABSTRACT				  // PHPDocBlock
+%token<Object> T_FINAL					  // PHPDocBlock
+%token<Object> T_PRIVATE				  // PHPDocBlock
+%token<Object> T_PROTECTED				  // PHPDocBlock
+%token<Object> T_PUBLIC					  // PHPDocBlock
 %token T_CLONE
 %token T_INSTANCEOF
 %token T_NAMESPACE
@@ -324,8 +327,9 @@ using Pair = System.Tuple<object,object>;
 %type<Object> namespace_statement_list_opt            // List<Statement>
 %type<Object> namespace_statement                     // Statement
 %type<Object> function_declaration_statement          // FunctionDecl
-%type<Object> function_declaration_head				  // Tuple<List<CustomAttribute>,string,bool>!	// <attributes,doc_comment,is_ref>
+%type<Object> function_declaration_head				  // Tuple<List<CustomAttribute>,object,bool>!	// <attributes,doc_comment,is_ref>
 %type<Object> ref_opt_identifier					  // Tuple<bool,string>!	// <is_ref, func_name>
+%type<Object> class_entry_type						  // Tuple<Tokens, PHPDocBlock>	// T_CLASS|T_TRAIT, PHPDocBlock
 %type<Object> class_declaration_statement             // TypeDecl
 %type<Object> class_identifier                        // String
 %type<Object> namespace_declaration_statement         // NamespaceDecl
@@ -339,6 +343,7 @@ using Pair = System.Tuple<object,object>;
 %type<Object> assignment_expression                   // AssignEx
 %type<Integer> cast_operation                         // Operation
 %type<Object> expr_without_chain                      // Expression
+%type<Object> new_expr								  // NewEx
 %type<Object> expression_list                         // List<Expression>/*!*/
 %type<Object> expression_list_opt                     // List<Expression> 
 %type<Object> foreach_variable                        // ForeachVar
@@ -360,6 +365,7 @@ using Pair = System.Tuple<object,object>;
 
 %type<Object> constant_inititalizer                   // Expression
 %type<Object> scalar_expr                             // Expression
+%type<Object> string_expr                             // Expression
 %type<Object> heredoc_expr							  // Expression
 %type<Object> for_statement                           // Statement
 %type<Object> foreach_statement                       // Statement
@@ -380,7 +386,8 @@ using Pair = System.Tuple<object,object>;
 %type<Object> actual_argument                         // ActualParam!
 %type<Object> actual_argument_list                    // List<ActualParam>!
 %type<Object> actual_argument_list_opt                // List<ActualParam>!
-%type<Object> actual_arguments_opt                    // Pair of List<TypeRef> and List<ActualParam>
+%type<Object> actual_arguments_opt                    // null or FcnParam = Tuple<List<TypeRef>, List<ActualParam>, List<Expression>>	// call type parameters, actual parameters, opt array dereferencing
+%type<Object> non_empty_actual_arguments_opt		  // null or FcnParam
 %type<Object> base_ctor_call_opt                      // List<ActualParam>
 
 
@@ -397,11 +404,12 @@ using Pair = System.Tuple<object,object>;
 %type<Object> string_embedded_key                     // Expression
 %type<Object> unsupported_declare_list                // null
 %type<Object> function_call                           // FunctionCall
+%type<Object> keyed_function_call					  // VarLikeConstructUse
 %type<Object> type_ref                                // TypeRef!
 %type<Object> type_ref_list                           // List<TypeRef>
 %type<Object> qualified_static_type_ref               // GenericQualifiedName
-%type<Object> interface_list                          // List<GenericQualifiedName>
-%type<Object> interface_extends_opt                  // List<GenericQualifiedName>
+%type<Object> interface_list                          // List<KeyValuePair<GenericQualifiedName,Position>>
+%type<Object> interface_extends_opt                  // List<KeyValuePair<GenericQualifiedName,Position>>
 %type<Object> variable_name                           
 
 %type<Object> generic_dynamic_args_opt                // List<TypeRef>!
@@ -442,12 +450,24 @@ using Pair = System.Tuple<object,object>;
 %type<Object> class_method_identifier				  // String
 %type<Object> implements_opt 
 %type<Object> ctor_arguments_opt
+
+%type<Object> trait_use_statement					  // TraitsUse
+%type<Object> trait_adaptations						  // null or List<TraitsUse.TraitAdaptation>
+%type<Object> trait_adaptation_list					  // null or List<TraitsUse.TraitAdaptation>
+%type<Object> non_empty_trait_adaptation_list		  // List<TraitsUse.TraitAdaptation>
+%type<Object> trait_adaptation_statement			  // TraitsUse.TraitAdaptation
+%type<Object> trait_precedence
+%type<Object> trait_method_reference
+%type<Object> trait_method_reference_fully_qualified
+%type<Object> trait_alias
+%type<Object> trait_modifiers						  // PhpMemberAttributes?
+
 %type<Object> dynamic_class_name_variable_property 
 %type<Object> additional_catches_opt 
 %type<Object> additional_catches
 
 %type<Object> lambda_function_expression				// LambdaFuncExpr!
-%type<Object> lambda_function_head_						// Tuple<PhpMemberAttributes,string,bool>!	// <static,doc_comment,is_ref>
+%type<Object> lambda_function_head_						// Tuple<PhpMemberAttributes,object,bool>!	// <static,doc_comment,is_ref>
 %type<Object> lambda_function_use_var					// FormalParam!
 %type<Object> lambda_function_use_var_list				// List<FormalParam>!
 %type<Object> lambda_function_use_vars					// List<FormalParam>
@@ -476,10 +496,11 @@ using Pair = System.Tuple<object,object>;
 
 %type<Integer> attribute_target_opt          // CustomAttribute.Targets
 
-%type<Object> extends_opt                    // GenericQualifiedName?
+%type<Object> extends_opt                    // Tuple<GenericQualifiedName,Position>
 %type<Object> qualified_namespace_name       // QualifiedName	// has base name
 %type<Object> namespace_name_list			 // List<string>
 %type<Object> namespace_name_identifier		 // string
+%type<Object> qualified_namespace_name_list  // List<QualifiedName>	// have base name
 
 %% /* Productions */
 
@@ -624,7 +645,7 @@ function_declaration_statement:
 		'{' inner_statement_list_opt '}'
 		{
 			var func_name = (string)$2;
-			var attrs_doc_ref = (Tuple<List<CustomAttribute>,string,bool>)$1;
+			var attrs_doc_ref = (Tuple<List<CustomAttribute>,object,bool>)$1;
 			
 			CheckTypeParameterNames((List<FormalTypeParam>)$3, func_name);
 			
@@ -644,14 +665,19 @@ function_declaration_statement:
 ;
 
 function_declaration_head:
-		T_FUNCTION					{ $$ = new Tuple<List<CustomAttribute>,string,bool>(null, (string)$1, false); }
-	|	attributes T_FUNCTION		{ $$ = new Tuple<List<CustomAttribute>,string,bool>((List<CustomAttribute>)$1, (string)$2, false); }
-	|	T_FUNCTION '&'				{ $$ = new Tuple<List<CustomAttribute>,string,bool>(null, (string)$1, true); }
-	|	attributes T_FUNCTION '&'	{ $$ = new Tuple<List<CustomAttribute>,string,bool>((List<CustomAttribute>)$1, (string)$2, true); }
+		T_FUNCTION					{ $$ = new Tuple<List<CustomAttribute>,object,bool>(null, $1, false); }
+	|	attributes T_FUNCTION		{ $$ = new Tuple<List<CustomAttribute>,object,bool>((List<CustomAttribute>)$1, $2, false); }
+	|	T_FUNCTION '&'				{ $$ = new Tuple<List<CustomAttribute>,object,bool>(null, $1, true); }
+	|	attributes T_FUNCTION '&'	{ $$ = new Tuple<List<CustomAttribute>,object,bool>((List<CustomAttribute>)$1, $2, true); }
+;
+
+class_entry_type:
+		T_CLASS		{ $$ = new Tuple<Tokens,PHPDocBlock>(Tokens.T_CLASS, $1 as PHPDocBlock); }
+	|	T_TRAIT		{ $$ = new Tuple<Tokens,PHPDocBlock>(Tokens.T_TRAIT, $1 as PHPDocBlock); }
 ;
 
 class_declaration_statement:
-		attributes_opt visibility_opt modifier_opt partial_opt T_CLASS
+		attributes_opt visibility_opt modifier_opt partial_opt class_entry_type
 		class_identifier type_parameter_list_opt
 		{
 			Name class_name = new Name((string)$6);
@@ -665,17 +691,21 @@ class_declaration_statement:
 		'{' class_statement_list_opt '}' 
 		{ 
 		  Name class_name = new Name((string)$6);
+		  var class_entry = (Tuple<Tokens,PHPDocBlock>)$5;
+		  var member_attr = (PhpMemberAttributes)($2 | $3);
+		  if (class_entry.Item1 == Tokens.T_TRAIT)
+			member_attr |= PhpMemberAttributes.Trait | PhpMemberAttributes.Abstract;
 		  
-		  CheckReservedNamesAbsence((GenericQualifiedName?)$9, @9);
-		  CheckReservedNamesAbsence((List<GenericQualifiedName>)$10, @10);
+		  CheckReservedNamesAbsence((Tuple<GenericQualifiedName,Position>)$9);
+		  CheckReservedNamesAbsence((List<KeyValuePair<GenericQualifiedName,Position>>)$10);
 		  
 		  $$ = new TypeDecl(sourceUnit, CombinePositions(@5, @6), @$, GetHeadingEnd(GetLeftValidPosition(10)), GetBodyStart(@11), 
 				IsCurrentCodeConditional, GetScope(), 
-				(PhpMemberAttributes)($2 | $3), $4 != 0, class_name, currentNamespace, 
-				(List<FormalTypeParam>)$7, (GenericQualifiedName?)$9, (List<GenericQualifiedName>)$10, 
+				member_attr, $4 != 0, class_name, @6, currentNamespace, 
+				(List<FormalTypeParam>)$7, (Tuple<GenericQualifiedName,Position>)$9, (List<KeyValuePair<GenericQualifiedName,Position>>)$10, 
 		    (List<TypeMemberDecl>)$12, (List<CustomAttribute>)$1);
 		    
-		  SetCommentSetHelper($$, $5);
+		  SetCommentSetHelper($$, class_entry.Item2);
 				
 		  reductionsSink.TypeDeclarationReduced(this, (TypeDecl)$$);
 
@@ -697,7 +727,7 @@ class_declaration_statement:
 	  { 
 		  Name class_name = new Name((string)$6);
 		  
-		  CheckReservedNamesAbsence((List<GenericQualifiedName>)$9, @9);
+		  CheckReservedNamesAbsence((List<KeyValuePair<GenericQualifiedName,Position>>)$9);
 		  
 			if ((PhpMemberAttributes)$3 != PhpMemberAttributes.None)
 				errors.Add(Errors.InvalidInterfaceModifier, SourceUnit, @3);
@@ -705,8 +735,9 @@ class_declaration_statement:
 		  $$ = new TypeDecl(sourceUnit, CombinePositions(@5, @6), @$, GetHeadingEnd(GetLeftValidPosition(9)), GetBodyStart(@10),
 				IsCurrentCodeConditional, GetScope(), 
 				(PhpMemberAttributes)$2 | PhpMemberAttributes.Abstract | PhpMemberAttributes.Interface, 
-				$4 != 0, class_name, currentNamespace, (List<FormalTypeParam>)$7, null, (List<GenericQualifiedName>)$9, (List<TypeMemberDecl>)$11, 
-				(List<CustomAttribute>)$1); 
+				$4 != 0, class_name, @6, currentNamespace,
+				(List<FormalTypeParam>)$7, null, (List<KeyValuePair<GenericQualifiedName,Position>>)$9,
+				(List<TypeMemberDecl>)$11, (List<CustomAttribute>)$1); 
 				
 			SetCommentSetHelper($$, $5);
 			
@@ -739,29 +770,29 @@ partial_opt:
 
 extends_opt:
 		/* empty */														{ $$ = null; }
-	|	T_EXTENDS qualified_static_type_ref	{ $$ = (GenericQualifiedName)$2; }
+	|	T_EXTENDS qualified_static_type_ref	{ $$ = new Tuple<GenericQualifiedName,Position>((GenericQualifiedName)$2, @2); }
 ;
 
 interface_extends_opt:
-		/* empty */								{ $$ = emptyGenericQualifiedNameList; }
+		/* empty */								{ $$ = emptyGenericQualifiedNamePositionList; }
 	|	T_EXTENDS interface_list	{ $$ = $2; }
 ;
 
 implements_opt:
-		/* empty */										{ $$ = emptyGenericQualifiedNameList; }
+		/* empty */										{ $$ = emptyGenericQualifiedNamePositionList; }
 	|	T_IMPLEMENTS interface_list		{ $$ = $2; }
 ;
 
 interface_list:
 		qualified_static_type_ref						
 		{ 
-			$$ = NewList<GenericQualifiedName>($1);
+			$$ = NewList<KeyValuePair<GenericQualifiedName,Position>>(new KeyValuePair<GenericQualifiedName,Position>((GenericQualifiedName)$1, @1));
 		}		
 		
 	|	interface_list ',' qualified_static_type_ref	
 		{ 
 			$$ = $1; 
-			ListAdd<GenericQualifiedName>($$, $3); 
+			ListAdd<KeyValuePair<GenericQualifiedName,Position>>($$, new KeyValuePair<GenericQualifiedName,Position>((GenericQualifiedName)$3, @3)); 
 		}
 ;
 
@@ -1218,11 +1249,17 @@ formal_parameter_list:
 formal_parameter:         
     attributes_opt type_hint_opt reference_opt T_VARIABLE                   
     { 
-			$$ = new FormalParam(@4, (string)$4, $2, (int)$3 == 1, null, (List<CustomAttribute>)$1); 
+			$$ = new FormalParam(@4, (string)$4, $2, (int)$3 == 1, null, (List<CustomAttribute>)$1)
+			{
+				TypeHintPosition = @2
+			};
 		}
   | attributes_opt type_hint_opt reference_opt T_VARIABLE '=' constant_inititalizer 
 		{ 
-			$$ = new FormalParam(@4, (string)$4, $2, (int)$3 == 1, (Expression)$6, (List<CustomAttribute>)$1); 
+			$$ = new FormalParam(@4, (string)$4, $2, (int)$3 == 1, (Expression)$6, (List<CustomAttribute>)$1)
+			{
+				TypeHintPosition = @2
+			};
 		}
 ;
 
@@ -1235,8 +1272,14 @@ type_hint_opt:
 
 
 actual_arguments_opt:
-		generic_dynamic_args_opt '(' actual_argument_list_opt ')' { $$ = new Pair($1, $3); }
-	|	/* empty */                                               { $$ = null; }
+		non_empty_actual_arguments_opt	{ $$ = $1; }
+	|	/* empty */                     { $$ = null; }
+;
+
+non_empty_actual_arguments_opt:
+		non_empty_actual_arguments_opt '[' key_opt ']'				{ $$ = CreateFcnParam((FcnParam)$1, (Expression)$3); }
+	|	non_empty_actual_arguments_opt '{' expr '}'					{ $$ = CreateFcnParam((FcnParam)$1, (Expression)$3); }
+	|	generic_dynamic_args_opt '(' actual_argument_list_opt ')'	{ $$ = new FcnParam((List<TypeRef>)$1, (List<ActualParam>)$3, null); }
 ;
 
 actual_argument_list_opt:
@@ -1355,7 +1398,55 @@ class_statement:
 			
 			LeaveConditionalCode();
 			UnreserveTypeNames((List<FormalTypeParam>)$6);
-		} 
+		}
+	|	trait_use_statement		{ $$ = $1; }
+;
+
+trait_use_statement:
+		T_USE qualified_namespace_name_list trait_adaptations		{ $$ = new TraitsUse(@$, GetHeadingEnd(@2), TranslateAny((List<QualifiedName>)$2), (List<TraitsUse.TraitAdaptation>)$3); }
+;
+
+trait_adaptations:
+		';'									{ $$ = null; }
+	|	'{' trait_adaptation_list '}'		{ $$ = $2; }
+;
+
+trait_adaptation_list:
+		/* empty */							{ $$ = new List<TraitsUse.TraitAdaptation>(/*empty*/); }
+	|	non_empty_trait_adaptation_list		{ $$ = $1; }
+;
+
+non_empty_trait_adaptation_list:
+		trait_adaptation_statement			{ $$ = NewList<TraitsUse.TraitAdaptation>($1); }
+	|	non_empty_trait_adaptation_list trait_adaptation_statement	{ $$ = ListAdd<TraitsUse.TraitAdaptation>($1, $2); }
+;
+
+trait_adaptation_statement:
+		trait_precedence		{ $$ = $1; }
+	|	trait_alias				{ $$ = $1; }
+;
+
+trait_precedence:
+	trait_method_reference_fully_qualified T_INSTEADOF qualified_namespace_name_list ';'	{ $$ = new TraitsUse.TraitAdaptationPrecedence(@$, (Tuple<QualifiedName?,Name>)$1, (List<QualifiedName>)$3); }
+;
+
+trait_method_reference:
+		identifier													{ $$ = new Tuple<QualifiedName?,Name>(null, new Name((string)$1)); }
+	|	trait_method_reference_fully_qualified						{ $$ = $1; }
+;
+
+trait_method_reference_fully_qualified:
+	qualified_namespace_name T_DOUBLE_COLON identifier				{ $$ = new Tuple<QualifiedName?,Name>((QualifiedName)$1, new Name((string)$3)); }
+;
+
+trait_alias:
+		trait_method_reference T_AS trait_modifiers identifier ';'	{ $$ = new TraitsUse.TraitAdaptationAlias(@$, (Tuple<QualifiedName?, Name>)$1, (string)$4, (PhpMemberAttributes?)$3); }
+	|	trait_method_reference T_AS member_modifier	';'				{ $$ = new TraitsUse.TraitAdaptationAlias(@$, (Tuple<QualifiedName?, Name>)$1, null, ((TmpMemberInfo)$1).attr); }
+;
+
+trait_modifiers:
+		/* empty */		{ $$ = null; }
+	|	member_modifier	{ $$ = (PhpMemberAttributes?)((TmpMemberInfo)$1).attr; }
 ;
 
 class_method_identifier:
@@ -1383,7 +1474,7 @@ method_body:
 
 property_modifiers:
 		member_modifiers	{ $$ = $1; }
-	|	T_VAR				{ $$ = TmpMemberInfoSingleton.Update(PhpMemberAttributes.Public, (string)$1); }
+	|	T_VAR				{ $$ = TmpMemberInfoSingleton.Update(PhpMemberAttributes.Public, $1); }
 ;
 
 member_modifiers_opt:
@@ -1414,12 +1505,12 @@ member_modifiers:
 ;
                    
 member_modifier:
-		T_PUBLIC			{ $$ = new TmpMemberInfo(PhpMemberAttributes.Public, (string)$1); }
-	|	T_PROTECTED			{ $$ = new TmpMemberInfo(PhpMemberAttributes.Protected, (string)$1); }		
-	|	T_PRIVATE			{ $$ = new TmpMemberInfo(PhpMemberAttributes.Private, (string)$1); }	
-	|	T_STATIC			{ $$ = new TmpMemberInfo(PhpMemberAttributes.Static, (string)$1); }	
-	|	T_ABSTRACT			{ $$ = new TmpMemberInfo(PhpMemberAttributes.Abstract, (string)$1); }		
-	|	T_FINAL				{ $$ = new TmpMemberInfo(PhpMemberAttributes.Final, (string)$1); }	
+		T_PUBLIC			{ $$ = new TmpMemberInfo(PhpMemberAttributes.Public, $1); }
+	|	T_PROTECTED			{ $$ = new TmpMemberInfo(PhpMemberAttributes.Protected, $1); }		
+	|	T_PRIVATE			{ $$ = new TmpMemberInfo(PhpMemberAttributes.Private, $1); }	
+	|	T_STATIC			{ $$ = new TmpMemberInfo(PhpMemberAttributes.Static, $1); }	
+	|	T_ABSTRACT			{ $$ = new TmpMemberInfo(PhpMemberAttributes.Abstract, $1); }		
+	|	T_FINAL				{ $$ = new TmpMemberInfo(PhpMemberAttributes.Final, $1); }	
 ;
 
 property_declarator_list:
@@ -1549,11 +1640,7 @@ expr_without_chain:
 			$$ = $1; 
 		}
 		
-	|	T_NEW type_ref ctor_arguments_opt 
-		{ 
-			$$ = new NewEx(@$, (TypeRef)$2, (List<ActualParam>)$3); 
-		}
-		
+	|	new_expr						{ $$ = $1; }		
 	|	T_CLONE expr                    { $$ = new UnaryEx(@$, Operations.Clone, (Expression)$2); }
 		
 	|	writable_chain T_INC                { $$ = new IncDecEx(@$, true, true, (VariableUse)$1); }
@@ -1620,6 +1707,13 @@ expr_without_chain:
 	| lambda_function_expression		{ $$ = $1; }
 ;
 
+new_expr:
+	T_NEW type_ref ctor_arguments_opt 
+	{ 
+		$$ = new NewEx(@$, (TypeRef)$2, (List<ActualParam>)$3); 
+	}
+;
+
 lambda_function_expression:
 	lambda_function_head_ formal_parameter_list_opt ')' lambda_function_use_vars
 	{ 
@@ -1627,7 +1721,7 @@ lambda_function_expression:
 	}
 	'{' inner_statement_list_opt '}'
 	{
-		var static_doc_ref = (Tuple<PhpMemberAttributes,string,bool>)$1;
+		var static_doc_ref = (Tuple<PhpMemberAttributes,object,bool>)$1;
 
 		$$ = new LambdaFunctionExpr(sourceUnit,
             @1, @$, GetHeadingEnd(@3), GetBodyStart(@6),
@@ -1640,10 +1734,10 @@ lambda_function_expression:
 ;
 
 lambda_function_head_:
-		T_FUNCTION	'('				{ $$ = new Tuple<PhpMemberAttributes,string,bool>(PhpMemberAttributes.None, (string)$1, false); }
-	|	T_STATIC T_FUNCTION	'('		{ $$ = new Tuple<PhpMemberAttributes,string,bool>(PhpMemberAttributes.Static, (string)$2, false); }
-	|	T_FUNCTION '&' '('			{ $$ = new Tuple<PhpMemberAttributes,string,bool>(PhpMemberAttributes.None, (string)$1, true); }
-	|	T_STATIC T_FUNCTION '&' '('	{ $$ = new Tuple<PhpMemberAttributes,string,bool>(PhpMemberAttributes.Static, (string)$2, true); }
+		T_FUNCTION	'('				{ $$ = new Tuple<PhpMemberAttributes,object,bool>(PhpMemberAttributes.None, $1, false); }
+	|	T_STATIC T_FUNCTION	'('		{ $$ = new Tuple<PhpMemberAttributes,object,bool>(PhpMemberAttributes.Static, $2, false); }
+	|	T_FUNCTION '&' '('			{ $$ = new Tuple<PhpMemberAttributes,object,bool>(PhpMemberAttributes.None, $1, true); }
+	|	T_STATIC T_FUNCTION '&' '('	{ $$ = new Tuple<PhpMemberAttributes,object,bool>(PhpMemberAttributes.Static, $2, true); }
 ;
 
 lambda_function_use_vars:
@@ -1783,7 +1877,7 @@ linq_into_clause_opt:
 function_call:
 		qualified_namespace_name generic_dynamic_args_opt '(' actual_argument_list_opt ')' 
 		{ 
-		  $$ = CreateDirectFcnCall(@$, (QualifiedName)$1, (List<ActualParam>)$4, (List<TypeRef>)$2);
+		  $$ = CreateDirectFcnCall(@$, (QualifiedName)$1, @1, (List<ActualParam>)$4, (List<TypeRef>)$2);
 		}
 
 	|	class_constant generic_dynamic_args_opt '(' actual_argument_list_opt ')' 
@@ -1793,7 +1887,7 @@ function_call:
 		
 	|	qualified_static_type_ref T_DOUBLE_COLON keyed_variable generic_dynamic_args_opt '(' actual_argument_list_opt ')' 
 		{ 
-		  $$ = new IndirectStMtdCall(@$, (GenericQualifiedName)$1, (CompoundVarUse)$3, (List<ActualParam>)$6, 
+		  $$ = new IndirectStMtdCall(@$, (GenericQualifiedName)$1, @1, (CompoundVarUse)$3, (List<ActualParam>)$6, 
 				(List<TypeRef>)$4);	
 		}
 
@@ -1916,22 +2010,27 @@ namespace_name_list:
 
 namespace_name_identifier:	// identifier + some keywords that should be used within qualified name (List, Array, ...)
 		class_identifier	{ $$ = $1; }
-	|	T_LIST				{ $$ = CSharpNameToken(@1); }
-	|	T_BOOL_TYPE			{ $$ = CSharpNameToken(@1); }
-	|	T_INT_TYPE			{ $$ = CSharpNameToken(@1); }
-	|	T_INT64_TYPE		{ $$ = CSharpNameToken(@1); }
-	|	T_DOUBLE_TYPE		{ $$ = CSharpNameToken(@1); }
-	|	T_STRING_TYPE		{ $$ = CSharpNameToken(@1); }
-	|	T_RESOURCE_TYPE		{ $$ = CSharpNameToken(@1); }
-	|	T_OBJECT_TYPE		{ $$ = CSharpNameToken(@1); }
-	|	T_ARRAY				{ $$ = CSharpNameToken(@1); }
-	|	T_ABSTRACT			{ $$ = CSharpNameToken(@1); }
+	|	T_LIST				{ $$ = CSharpNameToken(@1, (string)$1.Object); }
+	|	T_BOOL_TYPE			{ $$ = CSharpNameToken(@1, (string)$1.Object); }
+	|	T_INT_TYPE			{ $$ = CSharpNameToken(@1, (string)$1.Object); }
+	|	T_INT64_TYPE		{ $$ = CSharpNameToken(@1, (string)$1.Object); }
+	|	T_DOUBLE_TYPE		{ $$ = CSharpNameToken(@1, (string)$1.Object); }
+	|	T_STRING_TYPE		{ $$ = CSharpNameToken(@1, (string)$1.Object); }
+	|	T_RESOURCE_TYPE		{ $$ = CSharpNameToken(@1, (string)$1.Object); }
+	|	T_OBJECT_TYPE		{ $$ = CSharpNameToken(@1, (string)$1.Object); }
+	|	T_ARRAY				{ $$ = CSharpNameToken(@1, (string)$1.Object); }
+	|	T_ABSTRACT			{ $$ = CSharpNameToken(@1, ($1 as string) ?? "Abstract"); }	// needs PHPDoc handled differently to be sure the value of this token is its string
+;
+
+qualified_namespace_name_list:
+		qualified_namespace_name										{ $$ = NewList<QualifiedName>($1); }
+	|	qualified_namespace_name_list ',' qualified_namespace_name		{ $$ = ListAdd<QualifiedName>($1, $3); }
 ;
 
 keyed_field_names_opt:
 		keyed_field_names_opt T_OBJECT_OPERATOR keyed_field_name
 		{ 
-			if ($1 != null) ((VariableUse)$3).IsMemberOf = (VarLikeConstructUse)$1; 
+			if ($1 != null) ((VarLikeConstructUse)$3).IsMemberOf = (VarLikeConstructUse)$1; 
 			$$ = $3; 
 		}  
 		
@@ -1957,6 +2056,7 @@ constant_inititalizer:
 	|	'+' constant_inititalizer	                { $$ = new UnaryEx(@$, Operations.Plus, (Expression)$2); }
 	|	'-' constant_inititalizer	                { $$ = new UnaryEx(@$, Operations.Minus, (Expression)$2); }
 	|	heredoc_expr { $$ = $1; if (!($1 is StringLiteral)) this.ErrorSink.Add(FatalErrors.SyntaxError, SourceUnit, @1, CoreResources.nowdoc_expected); }
+	|	string_expr { $$ = $1; if (!($1 is StringLiteral)) this.ErrorSink.Add(FatalErrors.SyntaxError, SourceUnit, @1, CoreResources.constant_value_neither_scalar_nor_null); }
 ;
 
 constant:
@@ -1990,25 +2090,29 @@ global_constant:
 class_constant:
 		qualified_static_type_ref T_DOUBLE_COLON identifier 
 		{ 
-		  $$ = new ClassConstUse(@$, (GenericQualifiedName)$1, (string)$3); 
+		  $$ = new ClassConstUse(@$, (GenericQualifiedName)$1, @1, (string)$3, @3); 
 		}
 	|	keyed_variable T_DOUBLE_COLON identifier
 		{
-			$$ = new ClassConstUse(@$, new IndirectTypeRef(@1, (VariableUse)$1, TypeRef.EmptyList), (string)$3); 
+			$$ = new ClassConstUse(@$, new IndirectTypeRef(@1, (VariableUse)$1, TypeRef.EmptyList), (string)$3, @3); 
 		}
 ;
 
 scalar_expr:
 		constant		      { $$ = $1; }
 	|	T_STRING_VARNAME	{ $$ = new StringLiteral(@$, scanner.GetEncapsedString($1.Offset, $1.Integer)); }
-	|	'"'               { scanner.InUnicodeString = unicodeSemantics; } composite_string_opt '"' { $$ = CreateConcatExOrStringLiteral(@$, (List<Expression>)$3, false); }	
-	|	T_BINARY_DOUBLE   { scanner.InUnicodeString = unicodeSemantics; } composite_string_opt '"' { $$ = CreateConcatExOrStringLiteral(@$, (List<Expression>)$3, false); }
-	|	heredoc_expr	  { $$ = $1; }
+	|	string_expr			{ $$ = $1; }
+	|	heredoc_expr		{ $$ = $1; }
 ;
 
 heredoc_expr:
 		T_START_HEREDOC   { scanner.InUnicodeString = false; } composite_string_opt T_END_HEREDOC  { $$ = CreateConcatExOrStringLiteral(@$, (List<Expression>)$3, true); }
 	|	T_BINARY_HEREDOC  { scanner.InUnicodeString = false; } composite_string_opt T_END_HEREDOC  { $$ = CreateConcatExOrStringLiteral(@$, (List<Expression>)$3, true); }
+;
+
+string_expr:
+		'"'               { scanner.InUnicodeString = unicodeSemantics; } composite_string_opt '"' { $$ = CreateConcatExOrStringLiteral(@$, (List<Expression>)$3, false); }	
+	|	T_BINARY_DOUBLE   { scanner.InUnicodeString = unicodeSemantics; } composite_string_opt '"' { $$ = CreateConcatExOrStringLiteral(@$, (List<Expression>)$3, false); }
 ;
 
 writable_chain_list:
@@ -2030,8 +2134,8 @@ writable_chain:
 chain:
 		chain_base_with_function_calls T_OBJECT_OPERATOR keyed_field_name actual_arguments_opt member_access_chain_opt 
 		{ 
-      $$ = CreateVariableUse(@$, (VarLikeConstructUse)$1, (VarLikeConstructUse)$3, (Pair)$4, (VarLikeConstructUse)$5);
-		}	
+      $$ = CreateVariableUse(@$, (VarLikeConstructUse)$1, (VarLikeConstructUse)$3, (FcnParam)$4, (VarLikeConstructUse)$5);
+		}
 			
 	|	chain_base_with_function_calls { $$ = $1; }	
 ;
@@ -2044,12 +2148,12 @@ member_access_chain_opt:
 	|	/* empty */	{ $$ = null; }
 ;
 
-// -> (identifier|{expr})[key_opt]* (<:type_args:>(args))?
-// -> ($)*(T_VARIABLE|${expr})[key_opt]* (<:type_args:>(args))?
+// -> (identifier|{expr})[key_opt]* (<:type_args:>(args)[key_opt]*)?
+// -> ($)*(T_VARIABLE|${expr})[key_opt]* (<:type_args:>(args)[key_opt]*)?
 member_access:
 		T_OBJECT_OPERATOR keyed_field_name actual_arguments_opt 
 		{ 
-      $$ = CreatePropertyVariable(@$, (CompoundVarUse)$2, (Pair)$3);
+      $$ = CreatePropertyVariable(@$, (CompoundVarUse)$2, (FcnParam)$3);
 		}
 ;
 
@@ -2079,6 +2183,13 @@ keyed_variable:
 	|	simple_indirect_reference keyed_compound_variable	{ $$ = new IndirectVarUse(@$, $1, (Expression)$2); }	
 ;
 
+// (function_call)[key_opt]*
+keyed_function_call:
+		keyed_function_call '[' key_opt ']'			{ $$ = new ItemUse(@$, (VarLikeConstructUse)$1, (Expression)$3, true); }
+	|	keyed_function_call '{' expr '}'			{ $$ = new ItemUse(@$, (VarLikeConstructUse)$1, (Expression)$3, true); }
+	|	function_call								{ $$ = $1;}
+;
+
 // (static_type_ref::)?($)*(T_VARIABLE|${expr})[key_opt]*
 chain_base:
 		keyed_variable                                    { $$ = $1; }	
@@ -2087,7 +2198,7 @@ chain_base:
 		if ($3 is DirectVarUse && ((DirectVarUse)$3).VarName.IsThisVariableName)
 			$$ = $3;	// you know, in PHP ... whatever::$this means $this
 		else
-			$$ = CreateStaticFieldUse(@$, (GenericQualifiedName)$1, (CompoundVarUse)$3); 
+			$$ = CreateStaticFieldUse(@$, (GenericQualifiedName)$1, @1, (CompoundVarUse)$3); 
 	  }	
 	|	keyed_variable T_DOUBLE_COLON keyed_variable 
 	  { 
@@ -2096,11 +2207,10 @@ chain_base:
 ;
 
 chain_base_with_function_calls:
-		chain_base	    { $$ = $1; }	
-	|	function_call   { $$ = $1; }
+		chain_base			  { $$ = $1; }	
+	|	keyed_function_call   { $$ = $1; }
+	|	'(' new_expr ')'	  { $$ = $2; }
 ;
-
-
 
 // (identifier|{expr})[key_opt]*
 // ($)*(T_VARIABLE|${expr})[key_opt]*

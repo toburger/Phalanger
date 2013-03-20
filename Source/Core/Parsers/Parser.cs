@@ -6,7 +6,7 @@ using System.Collections.Generic;
 
 using PHP.Core.AST;
 using PHP.Core.Reflection;
-using Pair = System.Tuple<object,object>;
+using FcnParam = System.Tuple<System.Collections.Generic.List<PHP.Core.AST.TypeRef>, System.Collections.Generic.List<PHP.Core.AST.ActualParam>, System.Collections.Generic.List<PHP.Core.AST.Expression>>;
 
 namespace PHP.Core.Parsers
 {
@@ -154,7 +154,7 @@ namespace PHP.Core.Parsers
 		}
 
 		#endregion
-
+        
         #region TmpMemberInfo
 
         /// <summary>
@@ -163,14 +163,14 @@ namespace PHP.Core.Parsers
         private class TmpMemberInfo
         {
             public PhpMemberAttributes attr;
-            public string docComment;
+            public object docComment;
 
-            public TmpMemberInfo(PhpMemberAttributes attr, string docComment)
+            public TmpMemberInfo(PhpMemberAttributes attr, object docComment)
             {
                 this.Update(attr, docComment);
             }
 
-            public TmpMemberInfo/*!*/Update(PhpMemberAttributes attr, string docComment)
+            public TmpMemberInfo/*!*/Update(PhpMemberAttributes attr, object docComment)
             {
                 this.attr = attr;
                 this.docComment = docComment;
@@ -327,10 +327,9 @@ namespace PHP.Core.Parsers
         private void SetCommentSetHelper(object element, object doccomment)
         {
             Debug.Assert(element is IHasPhpDoc);
-            if (doccomment != null)
+            if (doccomment is PHPDocBlock)
             {
-                Debug.Assert(doccomment is string);
-                ((IHasPhpDoc)element).PHPDoc = new PHPDocBlock((string)doccomment);
+                ((IHasPhpDoc)element).PHPDoc = (PHPDocBlock)doccomment;
             }
         }
 
@@ -401,9 +400,9 @@ namespace PHP.Core.Parsers
         {
             return CreateStaticFieldUse(position, new IndirectTypeRef(position, className, TypeRef.EmptyList), field);
         }
-        private VariableUse CreateStaticFieldUse(Position position, GenericQualifiedName/*!*/ className, CompoundVarUse/*!*/ field)
+        private VariableUse CreateStaticFieldUse(Position position, GenericQualifiedName/*!*/ className, Position classNamePosition, CompoundVarUse/*!*/ field)
         {
-            return CreateStaticFieldUse(position, DirectTypeRef.FromGenericQualifiedName(position, className), field);
+            return CreateStaticFieldUse(position, DirectTypeRef.FromGenericQualifiedName(classNamePosition, className), field);
         }
 		private VariableUse CreateStaticFieldUse(Position position, TypeRef/*!*/ typeRef, CompoundVarUse/*!*/ field)
 		{
@@ -412,7 +411,7 @@ namespace PHP.Core.Parsers
 
 			if ((dvu = field as DirectVarUse) != null)
 			{
-                return new DirectStFldUse(position, typeRef, dvu.VarName);
+                return new DirectStFldUse(position, typeRef, dvu.VarName, field.Position);
 			}
 			else if ((ivu = field as IndirectVarUse) != null)
 			{
@@ -479,8 +478,40 @@ namespace PHP.Core.Parsers
 			}
 		}
 
-		private VarLikeConstructUse/*!*/ CreateVariableUse(Position pos, VarLikeConstructUse/*!*/ variable, VarLikeConstructUse/*!*/ property,
-	  Pair parameters, VarLikeConstructUse chain)
+        private FcnParam/*!*/ CreateFcnParam(FcnParam/*!*/fcnParam, Expression/*!*/arrayDereference)
+        {
+            var arrayKeyList = fcnParam.Item3;
+            if (arrayKeyList == null)
+                arrayKeyList = new List<Expression>(1);
+
+            arrayKeyList.Add(arrayDereference);
+
+            return new FcnParam(fcnParam.Item1, fcnParam.Item2, arrayKeyList);
+        }
+
+        private static VarLikeConstructUse/*!*/ CreateFcnArrayDereference(Position pos, VarLikeConstructUse/*!*/varUse, List<Expression> arrayKeysExpression)
+        {
+            if (arrayKeysExpression != null && arrayKeysExpression.Count > 0)
+            {
+                // wrap fcnCall into ItemUse
+                foreach (var keyExpr in arrayKeysExpression)
+                    varUse = new ItemUse(pos, varUse, keyExpr, true);
+            }
+
+            return varUse;
+        }
+
+        private static VarLikeConstructUse/*!*/ DereferenceFunctionArrayAccess(VarLikeConstructUse/*!*/varUse)
+        {
+            ItemUse itemUse;
+            while ((itemUse = varUse as ItemUse) != null && itemUse.IsFunctionArrayDereferencing)
+                varUse = itemUse.Array;
+
+            return varUse;
+        }
+
+		private static VarLikeConstructUse/*!*/ CreateVariableUse(Position pos, VarLikeConstructUse/*!*/ variable, VarLikeConstructUse/*!*/ property,
+                                                           FcnParam parameters, VarLikeConstructUse chain)
 		{
 			if (parameters != null)
 			{
@@ -495,16 +526,20 @@ namespace PHP.Core.Parsers
 					if ((direct_use = property as DirectVarUse) != null)
 					{
 						QualifiedName method_name = new QualifiedName(new Name(direct_use.VarName.Value), Name.EmptyNames);
-                        property = new DirectFcnCall(pos, method_name, null, (List<ActualParam>)parameters.Item2, (List<TypeRef>)parameters.Item1);
+                        property = new DirectFcnCall(pos, method_name, null, property.Position, (List<ActualParam>)parameters.Item2, (List<TypeRef>)parameters.Item1);
 					}
 					else
 					{
 						IndirectVarUse indirect_use = (IndirectVarUse)property;
                         property = new IndirectFcnCall(pos, indirect_use.VarNameEx, (List<ActualParam>)parameters.Item2, (List<TypeRef>)parameters.Item1);
 					}
-					property.IsMemberOf = variable;
-				}
-			}
+
+                    property.IsMemberOf = variable;
+                }
+
+                // wrap into ItemUse
+                property = CreateFcnArrayDereference(pos, property, parameters.Item3);
+            }
 			else
 			{
 				property.IsMemberOf = variable;
@@ -515,8 +550,15 @@ namespace PHP.Core.Parsers
 				// finds the first variable use in the chain and connects it to the property
 
 				VarLikeConstructUse first_in_chain = chain;
-				while (first_in_chain.IsMemberOf != null)
-					first_in_chain = first_in_chain.IsMemberOf;
+                for (;;)
+                {
+                    first_in_chain = DereferenceFunctionArrayAccess(first_in_chain);
+
+                    if (first_in_chain.IsMemberOf != null)
+                        first_in_chain = first_in_chain.IsMemberOf;
+                    else
+                        break;
+                }
 
 				first_in_chain.IsMemberOf = property;
 				return chain;
@@ -527,24 +569,32 @@ namespace PHP.Core.Parsers
 			}
 		}
 
-		private VarLikeConstructUse/*!*/ CreatePropertyVariable(Position pos, CompoundVarUse/*!*/ property,
-			Pair parameters)
+        private static VarLikeConstructUse/*!*/ CreatePropertyVariable(Position pos, CompoundVarUse/*!*/ property, FcnParam parameters)
 		{
 			if (parameters != null)
 			{
 				DirectVarUse direct_use;
 				IndirectVarUse indirect_use;
+                VarLikeConstructUse fcnCall;
 
 				if ((direct_use = property as DirectVarUse) != null)
 				{
 					QualifiedName method_name = new QualifiedName(new Name(direct_use.VarName.Value), Name.EmptyNames);
-                    return new DirectFcnCall(pos, method_name, null, (List<ActualParam>)parameters.Item2, (List<TypeRef>)parameters.Item1);
+                    fcnCall = new DirectFcnCall(pos, method_name, null, property.Position, (List<ActualParam>)parameters.Item2, (List<TypeRef>)parameters.Item1);
 				}
+                else if ((indirect_use = property as IndirectVarUse) != null)
+                {
+                    fcnCall = new IndirectFcnCall(pos, indirect_use.VarNameEx, (List<ActualParam>)parameters.Item2, (List<TypeRef>)parameters.Item1);
+                }
+                else
+                {
+                    fcnCall = new IndirectFcnCall(pos, (ItemUse)property, (List<ActualParam>)parameters.Item2, (List<TypeRef>)parameters.Item1);
+                }
 
-				if ((indirect_use = property as IndirectVarUse) != null)
-                    return new IndirectFcnCall(pos, indirect_use.VarNameEx, (List<ActualParam>)parameters.Item2, (List<TypeRef>)parameters.Item1);
+                // wrap fcnCall into ItemUse
+                fcnCall = CreateFcnArrayDereference(pos, fcnCall, parameters.Item3);
 
-                return new IndirectFcnCall(pos, (ItemUse)property, (List<ActualParam>)parameters.Item2, (List<TypeRef>)parameters.Item1);
+                return fcnCall;
 			}
 			else
 			{
@@ -552,11 +602,15 @@ namespace PHP.Core.Parsers
 			}
 		}
 
-		private VarLikeConstructUse/*!*/ CreatePropertyVariables(VarLikeConstructUse chain, VarLikeConstructUse/*!*/ member)
+		private static VarLikeConstructUse/*!*/ CreatePropertyVariables(VarLikeConstructUse chain, VarLikeConstructUse/*!*/ member)
 		{
-			if (chain != null)
+            // dereference function array access:
+            var element = DereferenceFunctionArrayAccess(member);
+            
+            // 
+            if (chain != null)
 			{
-				IndirectFcnCall ifc = member as IndirectFcnCall;
+                IndirectFcnCall ifc = element as IndirectFcnCall;
 
 				if (ifc != null && ifc.NameExpr as ItemUse != null)
 				{
@@ -565,23 +619,23 @@ namespace PHP.Core.Parsers
 				}
 				else
 				{
-					member.IsMemberOf = chain;
+                    element.IsMemberOf = chain;
 				}
 			}
 			else
 			{
-				member.IsMemberOf = null;
+                element.IsMemberOf = null;
 			}
 
 			return member;
 		}
 
-        private DirectFcnCall/*!*/ CreateDirectFcnCall(Position pos, QualifiedName qname, List<ActualParam> args, List<TypeRef> typeArgs)
+        private DirectFcnCall/*!*/ CreateDirectFcnCall(Position pos, QualifiedName qname, Position qnamePosition, List<ActualParam> args, List<TypeRef> typeArgs)
         {
             QualifiedName? fallbackQName;
 
             TranslateFallbackQualifiedName(ref qname, out fallbackQName);
-            return new DirectFcnCall(pos, qname, fallbackQName, args, typeArgs);
+            return new DirectFcnCall(pos, qname, fallbackQName, qnamePosition, args, typeArgs);
         }
 
         private GlobalConstUse/*!*/ CreateGlobalConstUse(Position pos, QualifiedName qname)
@@ -682,40 +736,43 @@ namespace PHP.Core.Parsers
 		/// <summary>
 		/// Checks whether a reserved class name is used in generic qualified name.
 		/// </summary>
-		private void CheckReservedNamesAbsence(GenericQualifiedName? genericName, Position position)
+		private void CheckReservedNamesAbsence(Tuple<GenericQualifiedName, Position> genericName)
 		{
-			if (genericName.HasValue)
-			{
-				if (genericName.Value.QualifiedName.IsReservedClassName)
-				{
-					errors.Add(Errors.CannotUseReservedName, SourceUnit, position, genericName.Value.QualifiedName.Name);
-				}
-
-				if (genericName.Value.GenericParams != null)
-					CheckReservedNamesAbsence(genericName.Value.GenericParams, position);
-			}
+            if (genericName != null)
+                CheckReservedNamesAbsence(genericName.Item1, genericName.Item2);
 		}
 
-		private void CheckReservedNamesAbsence(object[] staticTypeRefs, Position position)
-		{
-			foreach (object static_type_ref in staticTypeRefs)
-			{
-				if (static_type_ref is GenericQualifiedName)
-					CheckReservedNamesAbsence((GenericQualifiedName)static_type_ref, position);
-			}
-		}
+        private void CheckReservedNamesAbsence(GenericQualifiedName genericName, Position position)
+        {
+            if (genericName.QualifiedName.IsReservedClassName)
+            {
+                errors.Add(Errors.CannotUseReservedName, SourceUnit, position, genericName.QualifiedName.Name);
+            }
 
-		private void CheckReservedNamesAbsence(List<GenericQualifiedName> genericNames, Position position)
+            if (genericName.GenericParams != null)
+                CheckReservedNamesAbsence(genericName.GenericParams, position);
+        }
+
+        private void CheckReservedNamesAbsence(object[] staticTypeRefs, Position position)
+        {
+            foreach (object static_type_ref in staticTypeRefs)
+                if (static_type_ref is GenericQualifiedName)
+                    CheckReservedNamesAbsence((GenericQualifiedName)static_type_ref, position);
+        }
+
+		private void CheckReservedNamesAbsence(List<KeyValuePair<GenericQualifiedName, Position>> genericNames)
 		{
-			foreach (GenericQualifiedName genericName in genericNames)
-			{
-				CheckReservedNamesAbsence(genericName, position);
-			}
+            if (genericNames != null)
+            {
+                int count = genericNames.Count;
+                for (int i = 0; i < count; i++)
+                    CheckReservedNamesAbsence(genericNames[i].Key, genericNames[i].Value);
+            }
 		}
 
 		private bool CheckReservedNameAbsence(Name typeName, Position position)
 		{
-            if (Name.ParentClassName.Equals(typeName) || Name.SelfClassName.Equals(typeName))
+            if (typeName.IsReservedClassName)
             {
                 errors.Add(Errors.CannotUseReservedName, SourceUnit, position, typeName);
                 return false;
@@ -918,6 +975,19 @@ namespace PHP.Core.Parsers
         }
 
         /// <summary>
+        /// Transforms each item of <paramref name="qnameList"/> using <see cref="TranslateAny(QualifiedName)"/> function.
+        /// </summary>
+        /// <param name="qnameList">List of qualified names.</param>
+        /// <returns>Reference to <paramref name="qnameList"/>.</returns>
+        private List<QualifiedName> TranslateAny(List<QualifiedName> qnameList)
+        {
+            for (int i = 0; i < qnameList.Count; i++)
+                qnameList[i] = TranslateAny(qnameList[i]);
+            
+            return qnameList;
+        }
+
+        /// <summary>
         /// Translate the name using defined aliases. Any first part of the <see cref="QualifiedName"/> will be translated.
         /// </summary>
         /// <param name="qname">The name to translate.</param>
@@ -931,12 +1001,11 @@ namespace PHP.Core.Parsers
             if (qname.IsSimpleName)
             {
 
-                //if (qname.Name == Name.ParentClassName ||
-                //    qname.Name == Name.SelfClassName)
-                {
-                    if (reservedTypeNames.Contains(qname.Name.Value))
-                        return qname;
-                }
+                //if (qname.IsReservedClassName)
+                //    return qname;
+            
+                if (reservedTypeNames.Contains(qname.Name.Value))
+                    return qname;
 
                 //if ((features & LanguageFeatures.ClrSemantics) != 0)
                 //{
@@ -997,15 +1066,15 @@ namespace PHP.Core.Parsers
 
         #region Helpers
 
-        private static readonly List<Statement> emptyStatementList = new List<Statement>(1);
-		private static readonly List<GenericQualifiedName> emptyGenericQualifiedNameList = new List<GenericQualifiedName>(1);
-		private static readonly List<FormalParam> emptyFormalParamListIndex = new List<FormalParam>(1);
-		private static readonly List<ActualParam> emptyActualParamListIndex = new List<ActualParam>(1);
-		private static readonly List<Expression> emptyExpressionListIndex = new List<Expression>(1);
-		private static readonly List<Item> emptyItemListIndex = new List<Item>(1);
-		private static readonly List<NamedActualParam> emptyNamedActualParamListIndex = new List<NamedActualParam>(1);
-		private static readonly List<FormalTypeParam> emptyFormalTypeParamList = new List<FormalTypeParam>(1);
-		private static readonly List<TypeRef> emptyTypeRefList = new List<TypeRef>(1);
+        private static readonly List<Statement> emptyStatementList = new List<Statement>();
+        private static readonly List<KeyValuePair<GenericQualifiedName, Position>> emptyGenericQualifiedNamePositionList = new List<KeyValuePair<GenericQualifiedName, Position>>();
+		private static readonly List<FormalParam> emptyFormalParamListIndex = new List<FormalParam>();
+		private static readonly List<ActualParam> emptyActualParamListIndex = new List<ActualParam>();
+		private static readonly List<Expression> emptyExpressionListIndex = new List<Expression>();
+		private static readonly List<Item> emptyItemListIndex = new List<Item>();
+		private static readonly List<NamedActualParam> emptyNamedActualParamListIndex = new List<NamedActualParam>();
+		private static readonly List<FormalTypeParam> emptyFormalTypeParamList = new List<FormalTypeParam>();
+		private static readonly List<TypeRef> emptyTypeRefList = new List<TypeRef>();
 
 
 		private static List<T>/*!*/ListAdd<T>(object list, object item)
@@ -1086,7 +1155,7 @@ namespace PHP.Core.Parsers
 
 		private static List<T>/*!*/NewList<T>(T item)
 		{
-			return new List<T>(){ item };
+			return new List<T>(1){ item };
         }
 
 		private static List<T>/*!*/NewList<T>(object item)
@@ -1109,13 +1178,17 @@ namespace PHP.Core.Parsers
         /// but can be used from referenced C# library.
         /// </summary>
         /// <param name="position">Token position.</param>
+        /// <param name="token">Token text.</param>
         /// <returns>Text of the token.</returns>
-        private string CSharpNameToken(Position position)
+        private string CSharpNameToken(Position position, string token)
         {
             // get token string:
-            string token = this.scanner.GetTokenString(position);
+            //string token = this.scanner.GetTokenString(position);
 
-			// report syntax error if C# names are not allowed
+            if (token == null)
+                throw new ArgumentNullException("token");
+            
+            // report syntax error if C# names are not allowed
 			if ((this.features & LanguageFeatures.CSharpTypeNames) == 0)
                 this.ErrorSink.Add(FatalErrors.SyntaxError, this.SourceUnit, position, CoreResources.GetString("unexpected_token", token));
 

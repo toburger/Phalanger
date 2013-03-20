@@ -49,6 +49,7 @@ LNUM                    [0-9]+
 DNUM                    ([0-9]*[.][0-9]+)|([0-9]+[.][0-9]*)
 EXPONENT_DNUM           (({LNUM}|{DNUM})[eE][+-]?{LNUM})
 HNUM                    "0x"{HexDigit}+
+BNUM					"0b"[01]+
 LABEL                   [a-zA-Z_][a-zA-Z0-9_]*
 WHITESPACE              [ \n\r\t]+
 TABS_AND_SPACES         [ \t]*
@@ -156,6 +157,8 @@ NonVariableStart        [^a-zA-Z_{]
 <ST_IN_SCRIPTING>"echo"       			{ return Tokens.T_ECHO; }
 <ST_IN_SCRIPTING>"print"      			{ return Tokens.T_PRINT; }
 <ST_IN_SCRIPTING>"class"      			{ return Tokens.T_CLASS; }
+<ST_IN_SCRIPTING>"trait"      			{ return Tokens.T_TRAIT; }
+<ST_IN_SCRIPTING>"insteadof"      		{ return Tokens.T_INSTEADOF; }
 <ST_IN_SCRIPTING>"extends"    			{ return Tokens.T_EXTENDS; }
 <ST_IN_SCRIPTING>"new"        			{ return Tokens.T_NEW; }
 <ST_IN_SCRIPTING>"var"        			{ return Tokens.T_VAR; }
@@ -176,6 +179,7 @@ NonVariableStart        [^a-zA-Z_{]
 <ST_IN_SCRIPTING>"array"			 			{ return Tokens.T_ARRAY; }
 <ST_IN_SCRIPTING>"callable"			 			{ return Tokens.T_CALLABLE; }
 <ST_IN_SCRIPTING>"__CLASS__"    		{ return Tokens.T_CLASS_C; }
+<ST_IN_SCRIPTING>"__TRAIT__"    		{ return Tokens.T_TRAIT_C; }
 <ST_IN_SCRIPTING>"__FUNCTION__" 		{ return Tokens.T_FUNC_C; }
 <ST_IN_SCRIPTING>"__METHOD__"   		{ return Tokens.T_METHOD_C; }
 <ST_IN_SCRIPTING>"__LINE__"     		{ return Tokens.T_LINE; }
@@ -279,6 +283,7 @@ NonVariableStart        [^a-zA-Z_{]
 <ST_IN_SCRIPTING>{HNUM}            	{ return Tokens.ParseHexadecimalNumber; }
 <ST_IN_SCRIPTING>{DNUM}            	{ return Tokens.ParseDouble; }
 <ST_IN_SCRIPTING>{EXPONENT_DNUM}   	{ return Tokens.ParseDouble; } 
+<ST_IN_SCRIPTING>{BNUM}            	{ return Tokens.ParseBinaryNumber; }
 
 <ST_IN_SCRIPTING>"#pragma"[ \t]+"line"[ \t]+[-]?{LNUM}[ \t]* { BEGIN(LexicalStates.ST_ONE_LINE_COMMENT); return Tokens.T_PRAGMA_LINE; }
 <ST_IN_SCRIPTING>"#pragma"[ \t]+"file"[^\n]+                 { BEGIN(LexicalStates.ST_ONE_LINE_COMMENT); return Tokens.T_PRAGMA_FILE; }

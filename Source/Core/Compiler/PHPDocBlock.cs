@@ -18,6 +18,13 @@ namespace PHP.Core
 
         public abstract class Element
         {
+            #region Constants
+
+            /// <summary>
+            /// String sequence starting the PHPDoc block on the first line.
+            /// </summary>
+            private const string PhpDocStartString = "/**";
+
             /// <summary>
             /// Every PHPDoc line not starting with this character is ignored.
             /// </summary>
@@ -32,6 +39,22 @@ namespace PHP.Core
             /// String representing new line between PHPDoc comment lines.
             /// </summary>
             protected const string NewLineString = "\n";
+
+            #endregion
+
+            #region Properties
+
+            /// <summary>
+            /// Element starting position within the source code.
+            /// </summary>
+            public ShortPosition StartPosition { get; internal set; }
+
+            /// <summary>
+            /// Element ending position within the source code.
+            /// </summary>
+            public ShortPosition EndPosition { get; internal set; }
+
+            #endregion
 
             #region Tags
 
@@ -61,11 +84,16 @@ namespace PHP.Core
                         {
                             var f1 = t.GetField("Name1");
                             var f2 = t.GetField("Name2");
+                            var f3 = t.GetField("Name3");
+
                             if (f1 != null && f2 != null)
                             {
                                 var factory = CreateElementFactory(t);
                                 elementFactories.Add(TagNameHelper(f1), factory);
                                 elementFactories.Add(TagNameHelper(f2), factory);
+
+                                if (f3 != null)
+                                    elementFactories.Add(TagNameHelper(f3), factory);
                             }
                             else
                             {
@@ -147,6 +175,8 @@ namespace PHP.Core
 
             #endregion
 
+            #region Parsing
+
             /// <summary>
             /// Prepares given <paramref name="line"/>.
             /// 
@@ -155,16 +185,27 @@ namespace PHP.Core
             /// </summary>
             /// <param name="line">Line to parse. Cannot be <c>null</c> reference.</param>
             /// <param name="next">Outputs new element that will follow current element. Parsing will continue using this element.</param>
+            /// <param name="lineIndex">Index of the line within PHPDoc token.</param>
+            /// <param name="startCharIndex">Gets index of first content character within <paramref name="line"/>.</param>
+            /// <param name="endCharIndex">Gets index of last content character within <paramref name="line"/>.</param>
             /// <returns>If the line can be parsed, method returns <c>true</c>.</returns>
-            internal static bool TryParseLine(ref string/*!*/line, out Element next)
+            internal static bool TryParseLine(ref string/*!*/line, out Element next, int lineIndex, out int startCharIndex, out int endCharIndex)
             {
                 if (line == null)
                     throw new ArgumentNullException("line");
 
                 next = null;
+                startCharIndex = endCharIndex = 0;
 
                 int startIndex = 0;
                 while (startIndex < line.Length && char.IsWhiteSpace(line[startIndex])) startIndex++;   // skip whitespaces
+
+                // we souhldn't, but we allow first line to contain text after the /** sequence:
+                if (lineIndex == 0 && line.StartsWith(PhpDocStartString, StringComparison.Ordinal))
+                {
+                    startIndex = PhpDocStartString.Length - 1;  // jump to the '*' character
+                    Debug.Assert(line[startIndex] == PHPDocFirstChar);
+                }
 
                 // invalid PHPDoc line (not starting with '*'):
                 if (startIndex == line.Length || line[startIndex] != PHPDocFirstChar)
@@ -196,7 +237,9 @@ namespace PHP.Core
                 // TODO: handle "{@tag ...}" for @link, @see etc...
 
                 // check tags:
-                next = CreateElement(line);                    
+                next = CreateElement(line);
+                startCharIndex = startIndex;
+                endCharIndex = startIndex + line.Length;
 
                 // 
                 return true;
@@ -243,6 +286,8 @@ namespace PHP.Core
             /// Called when parsing of this element ended.
             /// </summary>
             internal virtual void OnEndParsing() { }
+
+            #endregion
         }
 
         /// <summary>
@@ -550,7 +595,7 @@ namespace PHP.Core
         /// <summary>
         /// Documents an exception thrown by a method.
         /// </summary>
-        public sealed class ExceptionTag : SingleLineTag
+        public sealed class ExceptionTag : TypeVarDescTag
         {
             public const string Name1 = "@exception";
             public const string Name2 = "@throws";
@@ -558,17 +603,17 @@ namespace PHP.Core
             /// <summary>
             /// version
             /// </summary>
-            public string Exception { get { return text; } }
+            public string Exception { get { return this.TypeNames; } }
 
             public ExceptionTag(string tagName, string/*!*/line)
-                : base(tagName, line)
+                : base(tagName, line, false)
             {
 
             }
 
             public override string ToString()
             {
-                return Name1 + " " + this.Exception;
+                return Name2 + " " + this.Exception;
             }
         }
 
@@ -588,6 +633,25 @@ namespace PHP.Core
             public readonly string TypeNames;
 
             /// <summary>
+            /// Starting column of the <see cref="TypeNames"/> within the line of code.
+            /// </summary>
+            private readonly int TypeNamesOffset = -1;
+
+            /// <summary>
+            /// Position of the <see cref="TypeNames"/> information.
+            /// </summary>
+            public ShortPosition TypeNamesPosition
+            {
+                get
+                {
+                    if (this.TypeNamesOffset < 0)
+                        return ShortPosition.Invalid;
+
+                    return new ShortPosition(this.StartPosition.Line, this.StartPosition.Column + this.TypeNamesOffset);
+                }
+            }
+
+            /// <summary>
             /// Array of type names. Cannot be <c>null</c>. Can be an empty array.
             /// </summary>
             public string[]/*!!*/TypeNamesArray { get { return string.IsNullOrEmpty(TypeNames) ? ArrayUtils.EmptyStrings : TypeNames.Split(new char[] { TypeNamesSeparator }, StringSplitOptions.RemoveEmptyEntries); } }
@@ -598,6 +662,25 @@ namespace PHP.Core
             public readonly string VariableName;
 
             /// <summary>
+            /// Starting column of the <see cref="VariableName"/> within the line of code.
+            /// </summary>
+            private readonly int VariableNameOffset = -1;
+
+            /// <summary>
+            /// Position of the <see cref="VariableName"/> information.
+            /// </summary>
+            public ShortPosition VariableNamePosition
+            {
+                get
+                {
+                    if (this.VariableNameOffset < 0)
+                        return ShortPosition.Invalid;
+
+                    return new ShortPosition(this.StartPosition.Line, this.StartPosition.Column + this.VariableNameOffset);
+                }
+            }
+
+            /// <summary>
             /// Optional. Element description.
             /// </summary>
             public string Description { get; private set; }
@@ -606,25 +689,40 @@ namespace PHP.Core
             {
                 Debug.Assert(line.StartsWith(tagName));
 
-                // [type] [$varname] [description]
+                // [type] [$varname] [type] [description]
 
                 int index = tagName.Length; // current index within line
                 int descStart = index;  // start of description, moved when [type] or [$varname] found
 
                 // try to find [type]
                 string word = NextWord(line, ref index);
-                if (word != null && word[0] != '$')
+                if (word != null && IsTypeName(word))
                 {
                     this.TypeNames = word;
+                    this.TypeNamesOffset = index - word.Length + 1;
                     descStart = index;
                     word = NextWord(line, ref index);
                 }
 
-                // try to find [$varname]
-                if (word != null && allowVariableName && word[0] == '$')
+                if (allowVariableName)
                 {
-                    this.VariableName = word;
-                    descStart = index;
+                    // try to find [$varname]
+                    if (word != null && word[0] == '$')
+                    {
+                        this.VariableName = word;
+                        this.VariableNameOffset = index - word.Length + 1;
+                        descStart = index;
+                        word = NextWord(line, ref index);
+                    }
+
+                    // try to find [type] if it was not found yet
+                    if (this.TypeNames == null && word != null && IsTypeName(word))
+                    {
+                        this.TypeNames = word;
+                        this.TypeNamesOffset = index - word.Length + 1;
+                        descStart = index;
+                        word = NextWord(line, ref index);
+                    }
                 }
 
                 if (descStart < line.Length)
@@ -649,6 +747,30 @@ namespace PHP.Core
                     return text.Substring(startIndex, index - startIndex);
                 else
                     return null;
+            }
+
+            /// <summary>
+            /// Checks whether given <paramref name="str"/> may be a type name.
+            /// </summary>
+            /// <param name="str">String to check.</param>
+            /// <returns>Whether given string may be a PHP type name.</returns>
+            internal static bool IsTypeName(string str)
+            {
+                if (string.IsNullOrEmpty(str))
+                    return false;
+
+                if (str[0] != '_' && !char.IsLetter(str[0]))
+                    return false;
+
+                for (int i = 1; i < str.Length; i++)
+                {
+                    char c = str[i];
+                    if (c != '_' && !char.IsLetterOrDigit(c) && c != '[' && c != ']' && c != TypeNamesSeparator && c != QualifiedName.Separator)
+                        return false;
+                }
+
+                // ok
+                return true;
             }
 
             #endregion
@@ -972,7 +1094,7 @@ namespace PHP.Core
             public const string Name = "@var";
 
             public VarTag(string/*!*/line)
-                : base(Name, line, false)
+                : base(Name, line, true)
             {
             }
 
@@ -987,16 +1109,18 @@ namespace PHP.Core
         /// </summary>
         public sealed class PropertyTag : TypeVarDescTag
         {
-            public const string Name = "@property";
+            public const string Name1 = "@property";
+            public const string Name2 = "@property-read";
+            public const string Name3 = "@property-write";
 
-            public PropertyTag(string/*!*/line)
-                : base(Name, line, true)
+            public PropertyTag(string tagName, string/*!*/line)
+                : base(tagName, line, true)
             {
             }
 
             public override string ToString()
             {
-                return Name + " " + this.TypeNames;
+                return Name1 + " " + this.TypeNames;
             }
         }
 
@@ -1036,21 +1160,21 @@ namespace PHP.Core
             {
                 Debug.Assert(line.StartsWith(tagName));
 
-                // [type] name() [name(params ...)] [description]
+                // [type] [name()] [name(params ...)] [description]
 
                 int index = tagName.Length; // current index within line
                 int descStart = index;  // start of description, moved when [type] or [name] found
 
                 // try to find [type]
                 string word = NextWord(line, ref index);
-                if (word != null && !word.EndsWith("()", StringComparison.Ordinal))
+                if (word != null && TypeVarDescTag.IsTypeName(word))
                 {
                     this.TypeNames = word;
                     descStart = index;
                     word = NextWord(line, ref index);
                 }
 
-                // name()
+                // [name()]
                 if (word != null && word.EndsWith("()", StringComparison.Ordinal))
                 {
                     this.MethodName = word.Remove(word.Length - 2);
@@ -1058,26 +1182,34 @@ namespace PHP.Core
                     word = NextWord(line, ref index);
                 }
 
-                // name(params ...)
+                // [name(params ...)]
                 while (descStart < line.Length && char.IsWhiteSpace(line[descStart]))
                     descStart++;    // skip whitespaces
 
                 this.Parameters = null;
+                
+                int nameStart = descStart;
+                int paramsFrom = -1;
+                while (descStart < line.Length && char.IsLetterOrDigit(line[descStart]))
+                    descStart++;
 
-                if (this.MethodName == null)
+                if (line[descStart] == '(')
                 {
-                    int nameStart = descStart;
-                    while (descStart < line.Length && line[descStart] != '(' && char.IsLetterOrDigit(line[descStart]))
-                        descStart++;
-                    if (descStart > nameStart)
-                        this.MethodName = line.Substring(nameStart, descStart - nameStart);
+                    paramsFrom = descStart;
+
+                    if (this.MethodName == null && paramsFrom > nameStart)
+                        this.MethodName = line.Substring(nameStart, paramsFrom - nameStart);
+                }
+                else
+                {
+                    descStart = nameStart;
                 }
 
                 if (string.IsNullOrEmpty(this.MethodName))
                     return;
 
-                int paramsFrom = descStart + this.MethodName.Length;
-                if (paramsFrom < line.Length && line.IndexOf(this.MethodName, descStart, StringComparison.Ordinal) == descStart && line[paramsFrom] == '(')
+                if (paramsFrom > 0)
+                if (paramsFrom < line.Length && line[paramsFrom] == '(')
                 {
                     // "name(" found
                     int paramsEnd = line.IndexOf(')', paramsFrom);
@@ -1221,6 +1353,12 @@ namespace PHP.Core
         private readonly string doccomment;
 
         /// <summary>
+        /// Position of the whole token in the source code.
+        /// </summary>
+        public Parsers.Position Position { get { return this.position; } }
+        private readonly Parsers.Position position;
+
+        /// <summary>
         /// Parsed data. Lazily initialized.
         /// </summary>
         private Element[] elements;
@@ -1245,9 +1383,12 @@ namespace PHP.Core
         /// <summary>
         /// Initializes new instance of <see cref="PHPDocBlock"/>.
         /// </summary>
-        public PHPDocBlock(string doccomment)
+        /// <param name="doccomment">PHPDoc token content.</param>
+        /// <param name="position">Position of whole token in the source code.</param>
+        public PHPDocBlock(string doccomment, Parsers.Position position)
         {
             this.doccomment = doccomment;
+            this.position = position;
         }
 
         /// <summary>
@@ -1264,7 +1405,7 @@ namespace PHP.Core
                 // double-checked lock
                 if (this.elements == null)
                 {
-                    var elements = ParseNoLock(this.doccomment);
+                    var elements = ParseNoLock(this.doccomment, this.position);
                     Debug.Assert(elements != null);
 
                     this.elements = elements.ToArray();
@@ -1275,25 +1416,46 @@ namespace PHP.Core
         /// <summary>
         /// Parses given <paramref name="doccomment"/> into a list of <see cref="Element"/> instances.
         /// </summary>
-        private static List<Element>/*!*/ParseNoLock(string doccomment)
+        /// <param name="doccomment">Content of the PHPDoc token.</param>
+        /// <param name="position">Position of whole <paramref name="doccomment"/> within the source code.</param>
+        private static List<Element>/*!*/ParseNoLock(string/*!*/doccomment, Parsers.Position position)
         {
             Debug.Assert(doccomment != null);
 
             var result = new List<Element>();
             var reader = new StringReader(doccomment);
+            int lineIndex = 0;
             string line;
             Element tmp;
             
-            Element current = new ShortDescriptionElement();
+            Element/*!*/current = new ShortDescriptionElement();
+            current.StartPosition = ShortPosition.Invalid;
             
             while ((line = reader.ReadLine()) != null)
             {
-                if (Element.TryParseLine(ref line, out tmp))    // validate the line, process tags
+                int startCharIndex, endCharIndex;
+                if (Element.TryParseLine(ref line, out tmp, lineIndex, out startCharIndex, out endCharIndex))    // validate the line, process tags
                 {
                     Debug.Assert(line != null);
+                    
+                    // determine position within the source code:
+                    int sourcePositionLine = lineIndex + position.FirstLine;
+                    if (lineIndex == 0)
+                    {
+                        startCharIndex += position.FirstColumn;
+                        endCharIndex += position.FirstColumn;
+                    }
 
+                    //
                     if (tmp == null)    // no new element created
+                    {
                         current.ParseLine(line, out tmp);       // pass the line into the current element
+                        current.EndPosition = new ShortPosition(sourcePositionLine, endCharIndex);   // update its end position
+
+                        // initialize start position of initial element
+                        if (current.GetType() == typeof(ShortDescriptionElement) && current.StartPosition.IsValid == false)
+                            current.StartPosition = new ShortPosition(sourcePositionLine, startCharIndex);
+                    }
 
                     if (tmp != null)    // new element created, it is already initialized with the current line
                     {
@@ -1303,9 +1465,14 @@ namespace PHP.Core
                             result.Add(current);
                         }
 
+                        tmp.StartPosition = new ShortPosition(sourcePositionLine, startCharIndex);   // initialize its start position
+                        tmp.EndPosition = new ShortPosition(sourcePositionLine, endCharIndex);       // update its end position
+
                         current = tmp;  // it is current element from now
                     }
                 }
+
+                lineIndex++;
             }
 
             // add the last found element
@@ -1465,7 +1632,7 @@ namespace PHP.Core
         /// <returns></returns>
         public override string ToString()
         {
-            return PHPDocPreview;
+            return this.doccomment;
         }
 
         #endregion

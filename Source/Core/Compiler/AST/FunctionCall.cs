@@ -52,12 +52,18 @@ namespace PHP.Core.AST
         /// <summary>GetUserEntryPoint calling signature</summary>
         public CallSignature CallSignature { get { return callSignature; } }
 
-		public FunctionCall(Position position, List<ActualParam>/*!*/ parameters, List<TypeRef>/*!*/ genericParams)
+		/// <summary>
+        /// Position of called function name in source code.
+        /// </summary>
+        public Position NamePosition { get; protected set; }
+
+		public FunctionCall(Position position, Position namePosition, List<ActualParam>/*!*/ parameters, List<TypeRef>/*!*/ genericParams)
 			: base(position)
 		{
 			Debug.Assert(parameters != null);
 
 			this.callSignature = new CallSignature(parameters, genericParams);
+            this.NamePosition = namePosition;
 		}
 
 		/// <include file='Doc/Nodes.xml' path='doc/method[@name="Expression.Analyze"]/*'/>
@@ -135,8 +141,41 @@ namespace PHP.Core.AST
         /// <summary>Simple name for methods.</summary>
         public QualifiedName QualifiedName { get { return qualifiedName; } }
 
-		private DRoutine routine;
+        private DRoutine routine;
 		private int overloadIndex = DRoutine.InvalidOverloadIndex;
+
+        /// <summary>
+        /// Type of <see cref="VarLikeConstructUse.IsMemberOf"/> if can be resolved statically. Otherwise <c>null</c>.
+        /// </summary>
+        private DType/*A*/isMemberOfType;
+
+        /// <summary>
+        /// Gets type of <see cref="VarLikeConstructUse.IsMemberOf"/> expression if can be resolved.
+        /// </summary>
+        /// <param name="analyzer">Analyzer.</param>
+        /// <returns><see cref="DType"/> or <c>null</c> reference if type could not be resolved.</returns>
+        private DType GetIsMemberOfType(Analyzer/*!*/analyzer)
+        {
+            if (isMemberOf == null)
+                return null;
+
+            DirectVarUse memberDirectVarUse = isMemberOf as DirectVarUse;
+
+            if (memberDirectVarUse != null && memberDirectVarUse.IsMemberOf == null &&  // isMemberOf is single variable
+                memberDirectVarUse.VarName.IsThisVariableName)                          // isMemberOf if $this
+            {
+                // $this->
+                return analyzer.CurrentType;
+            }
+            else if (isMemberOf is NewEx)
+            {
+                // (new T)->
+                return ((NewEx)isMemberOf).ClassNameRef.ResolvedType;
+            }
+
+            //
+            return null;
+        }
 
 		/// <summary>
 		/// An inlined function represented by the node (if any).
@@ -144,9 +183,9 @@ namespace PHP.Core.AST
 		private InlinedFunction inlined = InlinedFunction.None;
 
 		public DirectFcnCall(Position position,
-            QualifiedName qualifiedName, QualifiedName? fallbackQualifiedName,
+            QualifiedName qualifiedName, QualifiedName? fallbackQualifiedName, Position qualifiedNamePosition,
             List<ActualParam>/*!*/ parameters, List<TypeRef>/*!*/ genericParams)
-			: base(position, parameters, genericParams)
+            : base(position, qualifiedNamePosition, parameters, genericParams)
 		{
             this.qualifiedName = qualifiedName;
             this.fallbackQualifiedName = fallbackQualifiedName;
@@ -236,6 +275,55 @@ namespace PHP.Core.AST
                 new Evaluation(this);
         }
 
+        private bool AnalyzeMethodCallOnKnownType(Analyzer/*!*/ analyzer, ref ExInfoFromParent info, DType type)
+        {
+            if (type == null || type.IsUnknown)
+                return false;
+
+            bool runtimeVisibilityCheck, isCallMethod;
+
+            routine = analyzer.ResolveMethod(
+                type, qualifiedName.Name,
+                Position,
+                analyzer.CurrentType, analyzer.CurrentRoutine, false,
+                out runtimeVisibilityCheck, out isCallMethod);
+
+            if (routine.IsUnknown)
+                return false;
+
+            Debug.Assert(runtimeVisibilityCheck == false);  // can only be set to true if CurrentType or CurrentRoutine are null
+
+            // check __call
+            if (isCallMethod)
+            {
+                // TODO: generic args
+
+                var arg1 = new StringLiteral(this.Position, qualifiedName.Name.Value);
+                var arg2 = this.callSignature.BuildPhpArray();
+
+                this.callSignature = new CallSignature(
+                    new List<ActualParam>(2) {
+                                new ActualParam(arg1.Position, arg1, false),
+                                new ActualParam(arg2.Position, arg2, false)
+                            },
+                    new List<TypeRef>());
+            }
+
+            // resolve overload if applicable:
+            RoutineSignature signature;
+            overloadIndex = routine.ResolveOverload(analyzer, callSignature, position, out signature);
+
+            Debug.Assert(overloadIndex != DRoutine.InvalidOverloadIndex, "A function should have at least one overload");
+
+            // analyze parameters:
+            callSignature.Analyze(analyzer, signature, info, false);
+
+            // get properties:
+            analyzer.AddCurrentRoutineProperty(routine.GetCallerRequirements());
+
+            return true;
+        }
+
         /// <summary>
         /// Analyze the method call (isMemberOf != null).
         /// </summary>
@@ -246,59 +334,11 @@ namespace PHP.Core.AST
         {
             Debug.Assert(isMemberOf != null);
 
-            // $this->
-            DirectVarUse memberDirectVarUse = isMemberOf as DirectVarUse;
-            if (memberDirectVarUse != null && memberDirectVarUse.IsMemberOf == null &&  // isMemberOf is single variable
-                memberDirectVarUse.VarName.IsThisVariableName &&                        // isMemberOf if $this
-                analyzer.CurrentType != null)                                           // called in class context of known type
-            {
-                // $this->{qualifiedName}(callSignature)
-
-                bool runtimeVisibilityCheck, isCallMethod;
-
-                routine = analyzer.ResolveMethod(
-                    analyzer.CurrentType,//typeof(this)
-                    qualifiedName.Name,//.Namespace?
-                    Position,
-                    analyzer.CurrentType, analyzer.CurrentRoutine, false,
-                    out runtimeVisibilityCheck, out isCallMethod);
-
-                Debug.Assert(runtimeVisibilityCheck == false);  // can only be set to true if CurrentType or CurrentRoutine are null
-
-                if (!routine.IsUnknown)
-                {
-                    // check __call
-                    if (isCallMethod)
-                    {
-                        // TODO: generic args
-                        
-                        var arg1 = new StringLiteral(this.Position, qualifiedName.Name.Value);
-                        var arg2 = this.callSignature.BuildPhpArray();
-
-                        this.callSignature = new CallSignature(
-                            new List<ActualParam>(2) {
-                                new ActualParam(arg1.Position, arg1, false),
-                                new ActualParam(arg2.Position, arg2, false)
-                            },
-                            new List<TypeRef>());
-                    }
-                    
-                    // resolve overload if applicable:
-                    RoutineSignature signature;
-                    overloadIndex = routine.ResolveOverload(analyzer, callSignature, position, out signature);
-
-                    Debug.Assert(overloadIndex != DRoutine.InvalidOverloadIndex, "A function should have at least one overload");
-
-                    // analyze parameters:
-                    callSignature.Analyze(analyzer, signature, info, false);
-
-                    // get properties:
-                    analyzer.AddCurrentRoutineProperty(routine.GetCallerRequirements());
-
-                    return new Evaluation(this);
-                }
-            }
-
+            // resolve routine if IsMemberOf is resolved statically:
+            this.isMemberOfType = this.GetIsMemberOfType(analyzer);
+            if (this.AnalyzeMethodCallOnKnownType(analyzer, ref info, this.isMemberOfType))
+                return new Evaluation(this);
+            
             // by default, fall back to dynamic method invocation
             routine = null;
             callSignature.Analyze(analyzer, UnknownSignature.Default, info, false);
@@ -799,7 +839,7 @@ namespace PHP.Core.AST
                         result = routine.EmitCall(
                             codeGenerator, null, callSignature,
                             new ExpressionPlace(codeGenerator, isMemberOf), false, overloadIndex,
-                            null/*TODO when CFG*/, position, access, true);
+                            this.isMemberOfType, position, access, true);
                 }
                 else
                 {
@@ -923,7 +963,7 @@ namespace PHP.Core.AST
 
 		public IndirectFcnCall(Position p, Expression/*!*/ nameExpr, List<ActualParam>/*!*/ parameters,
 	  List<TypeRef>/*!*/ genericParams)
-			: base(p, parameters, genericParams)
+            : base(p, nameExpr.Position, parameters, genericParams)
 		{
 			this.nameExpr = nameExpr;
 		}
@@ -994,15 +1034,20 @@ namespace PHP.Core.AST
         public GenericQualifiedName ClassName { get { return typeRef.GenericQualifiedName; } }
         protected readonly TypeRef/*!*/typeRef;
 
+        /// <summary>
+        /// Position of <see cref="ClassName"/> in source code.
+        /// </summary>
+        public Position ClassNamePosition { get { return this.typeRef.Position; } }
+
         protected DType/*!A*/type;
-        
-		public StaticMtdCall(Position position, GenericQualifiedName className, List<ActualParam>/*!*/ parameters, List<TypeRef>/*!*/ genericParams)
-			: this(position, DirectTypeRef.FromGenericQualifiedName(position, className), parameters, genericParams)
+
+        public StaticMtdCall(Position position, Position methodNamePosition, GenericQualifiedName className, Position classNamePosition, List<ActualParam>/*!*/ parameters, List<TypeRef>/*!*/ genericParams)
+            : this(position, methodNamePosition, DirectTypeRef.FromGenericQualifiedName(classNamePosition, className), parameters, genericParams)
 		{	
 		}
 
-        public StaticMtdCall(Position position, TypeRef typeRef, List<ActualParam>/*!*/ parameters, List<TypeRef>/*!*/ genericParams)
-            : base(position, parameters, genericParams)
+        public StaticMtdCall(Position position, Position methodNamePosition, TypeRef typeRef, List<ActualParam>/*!*/ parameters, List<TypeRef>/*!*/ genericParams)
+            : base(position, methodNamePosition, parameters, genericParams)
         {
             Debug.Assert(typeRef != null);
 
@@ -1041,14 +1086,14 @@ namespace PHP.Core.AST
 
 		public DirectStMtdCall(Position position, ClassConstUse/*!*/ classConstant, List<ActualParam>/*!*/ parameters,
 	  List<TypeRef>/*!*/ genericParams)
-			: base(position, classConstant.TypeRef, parameters, genericParams)
+			: base(position, classConstant.NamePosition, classConstant.TypeRef, parameters, genericParams)
 		{
 			this.methodName = new Name(classConstant.Name.Value);
 		}
 
-		public DirectStMtdCall(Position position, GenericQualifiedName className, Name methodName, List<ActualParam>/*!*/ parameters,
+		public DirectStMtdCall(Position position, GenericQualifiedName className, Position classNamePosition, Name methodName, Position methodNamePosition, List<ActualParam>/*!*/ parameters,
 		  List<TypeRef>/*!*/ genericParams)
-			: base(position, className, parameters, genericParams)
+			: base(position, methodNamePosition, className, classNamePosition, parameters, genericParams)
 		{
 			this.methodName = methodName;
 		}
@@ -1177,9 +1222,9 @@ namespace PHP.Core.AST
         public CompoundVarUse/*!*/ MethodNameVar { get { return methodNameVar; } }
 
 		public IndirectStMtdCall(Position position,
-                                 GenericQualifiedName className, CompoundVarUse/*!*/ mtdNameVar,
+                                 GenericQualifiedName className, Position classNamePosition, CompoundVarUse/*!*/ mtdNameVar,
 	                             List<ActualParam>/*!*/ parameters, List<TypeRef>/*!*/ genericParams)
-			: base(position, className, parameters, genericParams)
+            : base(position, mtdNameVar.Position, className, classNamePosition, parameters, genericParams)
 		{
 			this.methodNameVar = mtdNameVar;
 		}
@@ -1187,7 +1232,7 @@ namespace PHP.Core.AST
         public IndirectStMtdCall(Position position,
                                  TypeRef/*!*/typeRef, CompoundVarUse/*!*/ mtdNameVar,
                                  List<ActualParam>/*!*/ parameters, List<TypeRef>/*!*/ genericParams)
-            : base(position, typeRef, parameters, genericParams)
+            : base(position, mtdNameVar.Position, typeRef, parameters, genericParams)
         {
             this.methodNameVar = mtdNameVar;
         }
