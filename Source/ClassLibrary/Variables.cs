@@ -259,7 +259,7 @@ namespace PHP.Library
 
 		#endregion
 
-		#region doubleval, floatval, intval, strval, settype, gettype
+		#region doubleval, floatval, intval, strval, settype, gettype, boolval
 
 		/// <summary>
 		/// Converts to double.
@@ -324,6 +324,18 @@ namespace PHP.Library
 		{
 			return PHP.Core.Convert.ObjectToString(variable);
 		}
+
+        /// <summary>
+        /// Converts to boolean.
+        /// </summary>
+        /// <param name="variable">The variable.</param>
+        /// <returns>The converted value.</returns>
+        [ImplementsFunction("boolval")]
+        [PureFunction]
+        public static bool BoolVal(object variable)
+        {
+            return PHP.Core.Convert.ObjectToBoolean(variable);
+        }
 
 		/// <summary>
 		/// Sets variable's type.
@@ -563,12 +575,45 @@ namespace PHP.Library
         [PureFunction]
         public static bool IsNumeric(object variable)
 		{
-			int ival;
-			long lval;
-			double dval;
+            if (variable == null)
+                return false;
 
-			return (Core.Convert.ObjectToNumber(variable, out ival, out lval, out dval) & Core.Convert.NumberInfo.IsNumber) != 0;
+            // real numbers
+            if (variable.GetType() == typeof(int) ||
+                variable.GetType() == typeof(long) ||
+                variable.GetType() == typeof(double))
+                return true;
+
+            // string            
+            if (variable.GetType() == typeof(string))
+                return IsNumericString((string)variable);
+            
+            if (variable.GetType() == typeof(PhpBytes))
+                return IsNumericString(variable.ToString());
+
+            // some .NET types:
+            if (variable is Core.Reflection.IClrValue)
+            {
+                // decimal ?
+            }
+
+            // anything else:
+            return false;
 		}
+
+        /// <summary>
+        /// Checks whether given string can be converted to a number.
+        /// </summary>
+        /// <param name="str">A string value.</param>
+        /// <returns><c>True</c> if the string represents a number. Otherwise <c>false</c>.</returns>
+        private static bool IsNumericString(string str)
+        {
+            int ival;
+            long lval;
+            double dval;
+
+            return (Core.Convert.StringToNumber(str, out ival, out lval, out dval) & Core.Convert.NumberInfo.IsNumber) != 0;
+        }
 
 		/// <summary>
 		/// Verifies that the contents of a variable can be called as a function.
@@ -665,6 +710,9 @@ namespace PHP.Library
         [ImplementsFunction("unserialize", FunctionImplOptions.NeedsClassContext)]
         public static PhpReference Unserialize(PHP.Core.Reflection.DTypeDesc caller, PhpBytes bytes)
 		{
+            if (bytes == null || bytes.Length == 0)
+                return new PhpReference(false);
+
             LibraryConfiguration config = LibraryConfiguration.GetLocal(ScriptContext.CurrentContext);
 
             return config.Serialization.DefaultSerializer.Deserialize(bytes, caller);
@@ -804,6 +852,9 @@ namespace PHP.Library
 				PhpException.ArgumentNull("vars");
 				return 0;
 			}
+
+            if (vars.Count == 0)
+                return 0;
 
             // unfortunately, type contains flags are combined with enumeration: 
             bool refs = (type & ExtractType.Refs) != 0;
